@@ -16,15 +16,15 @@ from config import ADMIN_IDS
 
 from handlers.user import menu_text, is_admin
 
-from db import campaign_stats, list_winners, claimed_usernames, list_campaigns_latest
 from db import (
     users_growth_by_day, users_total_count, upsert_campaign, set_campaign_status, delete_campaign, list_campaigns, get_campaign, add_winners, get_balance, total_balances,
     global_claims_stats, campaigns_status_counts, unclaimed_total_amount, total_assigned_amount, delete_winner_if_not_claimed, top_users_by_balance, users_new_since_hours,
-    users_new_since_days, users_active_since_days
+    users_new_since_days, users_active_since_days, ledger_user_history, ledger_add, add_balance, campaign_stats, list_winners, claimed_usernames, list_campaigns_latest, cursor,
+    conn
 )
-from keyboards import main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, campaign_created_kb
+from keyboards import main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, campaign_created_kb, admin_user_kb
 
-from states import CampaignCreate, AddWinners, DeleteWinner
+from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust
 
 router = Router()
 
@@ -381,4 +381,141 @@ async def adm_growth_png(callback: CallbackQuery):
     await callback.message.edit_text(
         "📈 График и цифры отправил сообщением выше.",
         reply_markup=admin_back_kb()
+    )
+
+@router.callback_query(F.data == "adm:ledger_last")
+async def adm_ledger_last(callback: CallbackQuery):
+    await callback.answer()
+
+    cursor.execute("""
+        SELECT l.created_at, u.username, l.delta, l.reason, l.campaign_key
+        FROM ledger l
+        LEFT JOIN users u ON u.user_id = l.user_id
+        ORDER BY datetime(l.created_at) DESC
+        LIMIT 30
+    """)
+    rows = cursor.fetchall()
+
+    if not rows:
+        await callback.message.edit_text("📜 Леджер пуст.", reply_markup=admin_back_kb())
+        return
+
+    lines = []
+    for created_at, username, delta, reason, campaign_key in rows:
+        name = f"@{username}" if username else "(no-username)"
+        ck = f" [{campaign_key}]" if campaign_key else ""
+        lines.append(f"{created_at} — {name}: {float(delta):g}⭐ — {reason}{ck}")
+
+    await callback.message.edit_text(
+        "📜 Последние 30 операций:\n\n" + "\n".join(lines),
+        reply_markup=admin_back_kb()
+    )
+
+@router.callback_query(F.data == "adm:user_balance")
+async def adm_user_balance(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+
+    await state.set_state(UserLookup.user)
+
+    await callback.message.answer(
+        "Введи username или user_id пользователя:"
+    )
+
+@router.message(UserLookup.user)
+async def adm_user_balance_show(message: Message, state: FSMContext):
+    value = message.text.strip()
+
+    if value.isdigit():
+        user_id = int(value)
+    else:
+        username = value.lstrip("@")
+        cursor.execute("SELECT user_id FROM users WHERE username = ?", (username,))
+        row = cursor.fetchone()
+        if not row:
+            await message.answer("❌ Пользователь не найден")
+            return
+        user_id = row[0]
+
+    balance = get_balance(user_id)
+    history = ledger_user_history(user_id)
+
+    lines = []
+    for created_at, delta, reason, campaign_key in history:
+        ck = f" ({campaign_key})" if campaign_key else ""
+        lines.append(f"{created_at}: {float(delta):g}⭐ {reason}{ck}")
+
+    if not lines:
+        lines = ["нет операций"]
+
+    await message.answer(
+        f"👤 User ID: {user_id}\n"
+        f"⭐ Баланс: {balance:.2f}\n\n"
+        f"📜 Последние операции:\n" + "\n".join(lines),
+        reply_markup=admin_user_kb(user_id)
+    )
+
+    await state.clear()
+
+@router.callback_query(F.data.startswith("adm:ub:add:"))
+async def adm_user_add_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = int(callback.data.split(":")[3])
+
+    await state.update_data(adj_user_id=user_id, adj_mode="add")
+    await state.set_state(AdminAdjust.amount)
+
+    await callback.message.answer("Введите сумму ⭐ для начисления:")
+
+
+@router.callback_query(F.data.startswith("adm:ub:sub:"))
+async def adm_user_sub_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = int(callback.data.split(":")[3])
+
+    await state.update_data(adj_user_id=user_id, adj_mode="sub")
+    await state.set_state(AdminAdjust.amount)
+
+    await callback.message.answer("Введите сумму ⭐ для списания:")
+
+
+@router.message(AdminAdjust.amount)
+async def adm_user_adjust_finish(message: Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = int(data["adj_user_id"])
+    mode = data["adj_mode"]
+
+    try:
+        amount = float(message.text.strip().replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи число > 0, например 10")
+        return
+
+    delta = amount if mode == "add" else -amount
+
+    try:
+        conn.execute("BEGIN")
+        add_balance(user_id, delta)
+        ledger_add(
+            user_id=user_id,
+            delta=delta,
+            reason="admin_adjust",
+            campaign_key=None,
+            meta=f"mode={mode}",
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        await message.answer("❌ Ошибка операции, попробуй ещё раз")
+        return
+
+    balance = get_balance(user_id)
+    await state.clear()
+
+    await message.answer(
+        f"✅ Готово\n"
+        f"Изменение: {delta:+.2f}⭐\n"
+        f"Новый баланс: {balance:.2f}⭐",
+        reply_markup=admin_user_kb(user_id)
     )

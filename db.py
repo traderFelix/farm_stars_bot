@@ -56,6 +56,7 @@ def init_db():
       delta REAL NOT NULL,
       reason TEXT NOT NULL,
       campaign_key TEXT,
+      meta TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(user_id)
     );
@@ -466,3 +467,44 @@ def users_growth_by_day(days: int = 30):
         (f"-{int(days)} days",),
     )
     return [(row[0], int(row[1])) for row in cursor.fetchall()]
+
+def ledger_add(user_id: int, delta: float, reason: str, campaign_key: Optional[str] = None, meta: Optional[str] = None):
+    cursor.execute(
+        """
+        INSERT INTO ledger (user_id, delta, reason, campaign_key, meta, created_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (int(user_id), float(delta), reason, campaign_key, meta),
+    )
+
+
+def ledger_last(user_id: int, limit: int = 20):
+    cursor.execute(
+        """
+        SELECT created_at, delta, reason, campaign_key, meta
+        FROM ledger
+        WHERE user_id = ?
+        ORDER BY datetime(created_at) DESC
+        LIMIT ?
+        """,
+        (int(user_id), int(limit)),
+    )
+    return cursor.fetchall()
+
+
+def ledger_sum(user_id: int) -> float:
+    cursor.execute("SELECT COALESCE(SUM(delta), 0) FROM ledger WHERE user_id = ?", (int(user_id),))
+    return float(cursor.fetchone()[0])
+
+def ledger_user_history(user_id: int, limit: int = 20):
+    cursor.execute(
+        """
+        SELECT created_at, delta, reason, campaign_key
+        FROM ledger
+        WHERE user_id = ?
+        ORDER BY datetime(created_at) DESC
+        LIMIT ?
+        """,
+        (int(user_id), int(limit)),
+    )
+    return cursor.fetchall()

@@ -40,11 +40,19 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="➕ Создать конкурс", callback_data="adm:new")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="adm:stats_menu")],
             [InlineKeyboardButton(text="📈 Рост пользователей", callback_data="adm:growth_png")],
+            [InlineKeyboardButton(text="📜 Леджер (последние)", callback_data="adm:ledger_last")],
+            [InlineKeyboardButton(text="🔎 Баланс пользователя", callback_data="adm:user_balance")],
             [InlineKeyboardButton(text="🏆 Топ по балансу", callback_data="adm:top")],
             [InlineKeyboardButton(text="⛔ Закрыть", callback_data="adm:close")],
         ]
     )
 
+def admin_user_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Начислить ⭐", callback_data=f"adm:ub:add:{user_id}")],
+        [InlineKeyboardButton(text="➖ Списать ⭐", callback_data=f"adm:ub:sub:{user_id}")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")],
+    ])
 
 def admin_back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

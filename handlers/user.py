@@ -7,7 +7,7 @@ from db import (
     register_user, get_balance,
     is_winner, attach_winner_user_id,
     has_claim, add_balance, add_claim, conn,
-    list_active_campaigns, get_campaign
+    list_active_campaigns, get_campaign, ledger_add
 )
 from keyboards import subscribe_keyboard, main_menu, tasks_menu
 
@@ -146,8 +146,19 @@ async def claim_for_campaign(callback: CallbackQuery):
 
     try:
         conn.execute("BEGIN")
-        add_balance(user_id, float(reward_amount))
-        add_claim(user_id, campaign_key, float(reward_amount))
+        amount = float(reward_amount)
+
+        add_balance(user_id, amount)
+        add_claim(user_id, campaign_key, amount)
+
+        ledger_add(
+            user_id=user_id,
+            delta=amount,
+            reason="claim",
+            campaign_key=campaign_key,
+            meta=title,
+        )
+
         conn.commit()
     except Exception:
         conn.rollback()
