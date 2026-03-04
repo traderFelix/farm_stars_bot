@@ -361,9 +361,15 @@ async def adm_growth_png(callback: CallbackQuery):
 
     caption = (
         f"📈 Рост пользователей\n\n"
-        f"👥 Всего: {total}\n"
-        f"🆕 Новых: 1д={new_1d} | 7д={new_7d} | 30д={new_30d}\n\n"
-        f"🔥 Активные: 1д={active_1d} | 7д={active_7d} | 30д={active_30d}"
+        f"👥 Всего: {total}\n\n"
+        f"🆕 Новые:\n"
+        f"1д - {new_1d}\n"
+        f"7д - {new_7d}\n"
+        f"30д - {new_30d}\n\n"
+        f"🔥 Активные:\n"
+        f"1д - {active_1d}\n"
+        f"7д - {active_7d}\n"
+        f"30д - {active_30d}"
     )
 
     await callback.message.answer_photo(photo=photo, caption=caption)
