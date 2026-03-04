@@ -1,7 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import CHANNEL_LINK
 
-
 # ---------- USER KEYBOARDS ----------
 
 def subscribe_keyboard() -> InlineKeyboardMarkup:
@@ -11,7 +10,6 @@ def subscribe_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")],
         ]
     )
-
 
 def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows = [
@@ -29,7 +27,6 @@ def tasks_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅ Назад", callback_data="back")],
         ]
     )
-
 
 # ---------- ADMIN KEYBOARDS ----------
 
@@ -71,7 +68,6 @@ def _status_icon(status: str) -> str:
         return "🟡"
     return "⚪"
 
-
 def campaigns_list_kb(rows) -> InlineKeyboardMarkup:
     keyboard = []
     for key, amount, status, created_at in rows[:50]:
@@ -86,7 +82,6 @@ def campaigns_list_kb(rows) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-
 def stats_list_kb(rows) -> InlineKeyboardMarkup:
     keyboard = []
     for key, amount, status, created_at in rows:
@@ -100,7 +95,6 @@ def stats_list_kb(rows) -> InlineKeyboardMarkup:
 
     keyboard.append([InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
 
 def campaign_manage_kb(key: str, status: str) -> InlineKeyboardMarkup:
     keyboard = []
@@ -125,7 +119,6 @@ def campaign_manage_kb(key: str, status: str) -> InlineKeyboardMarkup:
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
 
 def campaign_created_kb(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

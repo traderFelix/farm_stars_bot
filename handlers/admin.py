@@ -36,7 +36,6 @@ class AdminOnly(Filter):
 router.message.filter(AdminOnly())
 router.callback_query.filter(AdminOnly())
 
-
 async def _render_campaign_card(callback: CallbackQuery, key: str):
     row = get_campaign(key)
     if not row:
@@ -466,7 +465,6 @@ async def adm_user_add_start(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.answer("Введите сумму ⭐ для начисления:")
 
-
 @router.callback_query(F.data.startswith("adm:ub:sub:"))
 async def adm_user_sub_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -476,7 +474,6 @@ async def adm_user_sub_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminAdjust.amount)
 
     await callback.message.answer("Введите сумму ⭐ для списания:")
-
 
 @router.message(AdminAdjust.amount)
 async def adm_user_adjust_finish(message: Message, state: FSMContext):

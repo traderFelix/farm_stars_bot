@@ -13,14 +13,12 @@ from keyboards import subscribe_keyboard, main_menu, tasks_menu
 
 router = Router()
 
-
 def menu_text(balance: float) -> str:
     return "Чтобы получить больше ⭐️, выполняйте задания\n\n" + f"Баланс: {balance:.2f}⭐️"
 
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
-
 
 @router.message(CommandStart())
 async def start(message: Message, bot: Bot):
@@ -43,7 +41,6 @@ async def start(message: Message, bot: Bot):
     else:
         await message.answer("Чтобы продолжить, подпишись на канал 👇", reply_markup=subscribe_keyboard())
 
-
 @router.callback_query(F.data == "check_sub")
 async def check_subscription(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
@@ -60,7 +57,6 @@ async def check_subscription(callback: CallbackQuery, bot: Bot):
     else:
         await callback.answer("❌ Ты ещё не подписан!", show_alert=True)
 
-
 @router.callback_query(F.data == "tasks")
 async def show_tasks(callback: CallbackQuery):
     await callback.answer()
@@ -76,14 +72,12 @@ async def show_tasks(callback: CallbackQuery):
         reply_markup=tasks_menu()
     )
 
-
 @router.callback_query(F.data == "back")
 async def back_to_main(callback: CallbackQuery):
     user_id = callback.from_user.id
     balance = get_balance(user_id)
     await callback.answer()
     await callback.message.edit_text(menu_text(balance), reply_markup=main_menu(is_admin(user_id)))
-
 
 @router.callback_query(F.data == "claim")
 async def claim_menu(callback: CallbackQuery):
@@ -107,7 +101,6 @@ async def claim_menu(callback: CallbackQuery):
         "Выбери конкурс для получения награды:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
     )
-
 
 @router.callback_query(F.data.startswith("claim:"))
 async def claim_for_campaign(callback: CallbackQuery):
