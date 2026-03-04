@@ -1,6 +1,6 @@
 import sqlite3
 
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
 conn = sqlite3.connect("bot.db")
 cursor = conn.cursor()
@@ -424,3 +424,45 @@ def unclaimed_total_amount() -> float:
     )
     row = cursor.fetchone()
     return float(row[0]) if row and row[0] is not None else 0.0
+
+def users_total_count() -> int:
+    cursor.execute("SELECT COUNT(*) FROM users")
+    return int(cursor.fetchone()[0])
+
+
+def users_new_since_hours(hours: int) -> int:
+    cursor.execute(
+        "SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', ?)",
+        (f"-{int(hours)} hours",),
+    )
+    return int(cursor.fetchone()[0])
+
+
+def users_new_since_days(days: int) -> int:
+    cursor.execute(
+        "SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', ?)",
+        (f"-{int(days)} days",),
+    )
+    return int(cursor.fetchone()[0])
+
+
+def users_active_since_days(days: int) -> int:
+    cursor.execute(
+        "SELECT COUNT(*) FROM users WHERE last_seen_at >= datetime('now', ?)",
+        (f"-{int(days)} days",),
+    )
+    return int(cursor.fetchone()[0])
+
+
+def users_growth_by_day(days: int = 30):
+    cursor.execute(
+        """
+        SELECT date(created_at) AS d, COUNT(*) AS cnt
+        FROM users
+        WHERE created_at >= datetime('now', ?)
+        GROUP BY d
+        ORDER BY d ASC
+        """,
+        (f"-{int(days)} days",),
+    )
+    return [(row[0], int(row[1])) for row in cursor.fetchall()]

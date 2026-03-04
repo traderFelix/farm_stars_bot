@@ -1,5 +1,8 @@
+import io
+import matplotlib.pyplot as plt
+
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, TelegramObject
+from aiogram.types import Message, CallbackQuery, TelegramObject, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Filter
 
@@ -9,8 +12,9 @@ from handlers.user import menu_text, is_admin
 
 from db import campaign_stats, list_winners, claimed_usernames, list_campaigns_latest
 from db import (
-    cursor, conn, upsert_campaign, set_campaign_status, delete_campaign, list_campaigns, get_campaign, add_winners, get_balance, total_balances,
-    global_claims_stats, campaigns_status_counts, unclaimed_total_amount, total_assigned_amount, delete_winner_if_not_claimed, top_users_by_balance
+    users_growth_by_day, users_total_count, upsert_campaign, set_campaign_status, delete_campaign, list_campaigns, get_campaign, add_winners, get_balance, total_balances,
+    global_claims_stats, campaigns_status_counts, unclaimed_total_amount, total_assigned_amount, delete_winner_if_not_claimed, top_users_by_balance, users_new_since_hours,
+    users_new_since_days, users_active_since_days
 )
 from keyboards import main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, campaign_created_kb
 
@@ -305,3 +309,56 @@ async def adm_top_balances(callback: CallbackQuery):
         text = "🏆 Топ-10 по балансу:\n\n" + "\n".join(lines)
 
     await callback.message.edit_text(text, reply_markup=admin_back_kb())
+
+@router.callback_query(F.data == "adm:growth_png")
+async def adm_growth_png(callback: CallbackQuery):
+    await callback.answer()
+
+    days = 30
+    total = users_total_count()
+    new_1d = users_new_since_hours(24)
+    new_7d = users_new_since_days(7)
+    new_30d = users_new_since_days(30)
+
+    active_1d = users_active_since_days(1)
+    active_7d = users_active_since_days(7)
+    active_30d = users_active_since_days(30)
+
+    points = users_growth_by_day(days)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+
+    if points:
+        x = [d for d, _ in points]
+        y = [cnt for _, cnt in points]
+        ax.plot(x, y)
+        ax.set_xticks(x[::max(1, len(x)//6)])
+        ax.set_xlabel("Date")
+        ax.set_ylabel("New users")
+        ax.set_title(f"User growth (last {days} days)")
+        fig.autofmt_xdate(rotation=45)
+    else:
+        ax.text(0.5, 0.5, "No data yet", ha="center", va="center")
+        ax.set_axis_off()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+
+    photo = BufferedInputFile(buf.read(), filename="growth.png")
+
+    caption = (
+        f"📈 Рост пользователей\n\n"
+        f"👥 Всего: {total}\n"
+        f"🆕 Новых: 1д={new_1d} | 7д={new_7d} | 30д={new_30d}\n\n"
+        f"🔥 Активные: 1д={active_1d} | 7д={active_7d} | 30д={active_30d}"
+    )
+
+    await callback.message.answer_photo(photo=photo, caption=caption)
+
+    await callback.message.edit_text(
+        "📈 График и цифры отправил сообщением выше.",
+        reply_markup=admin_back_kb()
+    )

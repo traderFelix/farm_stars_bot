@@ -7,7 +7,7 @@ from config import CHANNEL_LINK
 def subscribe_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Подписаться", url=CHANNEL_LINK)],  # если у тебя закрытый канал — ты уже делал правильный url
+            [InlineKeyboardButton(text="📢 Подписаться", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")],
         ]
     )
@@ -39,6 +39,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📋 Все конкурсы", callback_data="adm:list")],
             [InlineKeyboardButton(text="➕ Создать конкурс", callback_data="adm:new")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="adm:stats_menu")],
+            [InlineKeyboardButton(text="📈 Рост пользователей", callback_data="adm:growth_png")],
             [InlineKeyboardButton(text="🏆 Топ по балансу", callback_data="adm:top")],
             [InlineKeyboardButton(text="⛔ Закрыть", callback_data="adm:close")],
         ]
