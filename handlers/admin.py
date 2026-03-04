@@ -1,8 +1,11 @@
 import io
+from datetime import date, timedelta
+
+import matplotlib
+matplotlib.use("Agg")  # важно для серверов без GUI
+
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-
-from datetime import date, timedelta
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, TelegramObject, BufferedInputFile
@@ -340,6 +343,7 @@ async def adm_growth_png(callback: CallbackQuery):
 
         ax.bar(xs, ys)
         ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
 
         ax.set_ylim(bottom=0)
         ax.set_xticks(xs[::max(1, len(xs)//15)])
@@ -360,9 +364,9 @@ async def adm_growth_png(callback: CallbackQuery):
     photo = BufferedInputFile(buf.read(), filename="growth.png")
 
     caption = (
-        f"📈 Рост пользователей\n\n"
-        f"👥 Всего: {total}\n\n"
-        f"🆕 Новые:\n"
+        f"📈Рост пользователей\n\n"
+        f"👥Всего: {total}\n\n"
+        f"🆕Новые:\n"
         f"1д - {new_1d}\n"
         f"7д - {new_7d}\n"
         f"30д - {new_30d}\n\n"
