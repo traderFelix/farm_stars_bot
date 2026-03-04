@@ -17,10 +17,22 @@ from config import ADMIN_IDS
 from handlers.user import menu_text, is_admin
 
 from db import (
-    users_growth_by_day, users_total_count, upsert_campaign, set_campaign_status, delete_campaign, list_campaigns, get_campaign, add_winners, get_balance, total_balances,
-    global_claims_stats, campaigns_status_counts, unclaimed_total_amount, total_assigned_amount, delete_winner_if_not_claimed, top_users_by_balance, users_new_since_hours,
-    users_new_since_days, users_active_since_days, ledger_user_history, ledger_add, add_balance, campaign_stats, list_winners, claimed_usernames, list_campaigns_latest, cursor,
-    conn
+    cursor, conn,
+
+    # campaigns
+    upsert_campaign, set_campaign_status, delete_campaign, list_campaigns, list_campaigns_latest, get_campaign,
+    add_winners, delete_winner_if_not_claimed,
+
+    # stats
+    campaign_stats, list_winners, claimed_usernames, global_claims_stats, campaigns_status_counts, total_balances,
+    unclaimed_total_amount, total_assigned_amount,
+
+    # users/growth
+    top_users_by_balance, users_total_count, users_new_since_hours, users_new_since_days, users_active_since_days,
+    users_growth_by_day,
+
+    # ledger
+    ledger_add, ledger_user_history, add_balance, get_balance,
 )
 from keyboards import main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, campaign_created_kb, admin_user_kb
 
