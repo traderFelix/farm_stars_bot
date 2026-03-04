@@ -1,5 +1,8 @@
 import io
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+
+from datetime import date, timedelta
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, TelegramObject, BufferedInputFile
@@ -330,13 +333,20 @@ async def adm_growth_png(callback: CallbackQuery):
     ax = fig.add_subplot(111)
 
     if points:
-        x = [d for d, _ in points]
-        y = [cnt for _, cnt in points]
-        ax.plot(x, y)
-        ax.set_xticks(x[::max(1, len(x)//6)])
+        data = {d: int(cnt) for d, cnt in points}
+
+        xs = [(date.today() - timedelta(days=days - 1 - i)).isoformat() for i in range(days)]
+        ys = [data.get(d, 0) for d in xs]
+
+        ax.bar(xs, ys)
+        ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+        ax.set_ylim(bottom=0)
+        ax.set_xticks(xs[::max(1, len(xs)//15)])
         ax.set_xlabel("Date")
         ax.set_ylabel("New users")
         ax.set_title(f"User growth (last {days} days)")
+
         fig.autofmt_xdate(rotation=45)
     else:
         ax.text(0.5, 0.5, "No data yet", ha="center", va="center")

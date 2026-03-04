@@ -17,7 +17,7 @@ venv/
 # IDE
 .vscode/
 .idea/
-.iml
+*.iml
 
 # Local data
 bot.db
