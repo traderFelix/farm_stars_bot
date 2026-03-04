@@ -1,7 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import CHANNEL_LINK
 
-
 # ---------- USER KEYBOARDS ----------
 
 def subscribe_keyboard() -> InlineKeyboardMarkup:
@@ -11,7 +10,6 @@ def subscribe_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")],
         ]
     )
-
 
 def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows = [
@@ -30,7 +28,6 @@ def tasks_menu() -> InlineKeyboardMarkup:
         ]
     )
 
-
 # ---------- ADMIN KEYBOARDS ----------
 
 def admin_menu_kb() -> InlineKeyboardMarkup:
@@ -40,11 +37,19 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="➕ Создать конкурс", callback_data="adm:new")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="adm:stats_menu")],
             [InlineKeyboardButton(text="📈 Рост пользователей", callback_data="adm:growth_png")],
+            [InlineKeyboardButton(text="📜 Леджер (последние)", callback_data="adm:ledger_last")],
+            [InlineKeyboardButton(text="🔎 Баланс пользователя", callback_data="adm:user_balance")],
             [InlineKeyboardButton(text="🏆 Топ по балансу", callback_data="adm:top")],
             [InlineKeyboardButton(text="⛔ Закрыть", callback_data="adm:close")],
         ]
     )
 
+def admin_user_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Начислить ⭐", callback_data=f"adm:ub:add:{user_id}")],
+        [InlineKeyboardButton(text="➖ Списать ⭐", callback_data=f"adm:ub:sub:{user_id}")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")],
+    ])
 
 def admin_back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -63,7 +68,6 @@ def _status_icon(status: str) -> str:
         return "🟡"
     return "⚪"
 
-
 def campaigns_list_kb(rows) -> InlineKeyboardMarkup:
     keyboard = []
     for key, amount, status, created_at in rows[:50]:
@@ -78,7 +82,6 @@ def campaigns_list_kb(rows) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-
 def stats_list_kb(rows) -> InlineKeyboardMarkup:
     keyboard = []
     for key, amount, status, created_at in rows:
@@ -92,7 +95,6 @@ def stats_list_kb(rows) -> InlineKeyboardMarkup:
 
     keyboard.append([InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
 
 def campaign_manage_kb(key: str, status: str) -> InlineKeyboardMarkup:
     keyboard = []
@@ -117,7 +119,6 @@ def campaign_manage_kb(key: str, status: str) -> InlineKeyboardMarkup:
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
 
 def campaign_created_kb(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

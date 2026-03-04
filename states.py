@@ -10,3 +10,9 @@ class AddWinners(StatesGroup):
 
 class DeleteWinner(StatesGroup):
     username = State()
+
+class UserLookup(StatesGroup):
+    user = State()
+
+class AdminAdjust(StatesGroup):
+    amount = State()
