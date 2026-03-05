@@ -27,3 +27,6 @@ bot.db
 # Secrets/env
 .env
 .env.*
+
+/bot.db-shm
+/bot.db-wal

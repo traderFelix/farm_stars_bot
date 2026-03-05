@@ -6,17 +6,22 @@ from aiogram.fsm.context import FSMContext
 from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW
 
 from db import (
+    tx,
     register_user, get_balance, create_withdrawal, user_withdrawals,
     is_winner, attach_winner_user_id,
-    has_claim, add_balance, add_claim, conn,
+    has_claim, add_balance, add_claim,
     list_active_campaigns, get_campaign, ledger_add
 )
 
-from keyboards import subscribe_keyboard, main_menu, tasks_menu, withdraw_method_kb, withdraw_menu_kb, withdraw_back_kb
+from keyboards import (
+    subscribe_keyboard, main_menu, tasks_menu,
+    withdraw_method_kb, withdraw_menu_kb, withdraw_back_kb
+)
 
 from states import WithdrawCreate
 
 router = Router()
+
 
 def menu_text(balance: float) -> str:
     return "Чтобы получить больше ⭐️, выполняйте задания\n\n" + f"Баланс: {balance:.2f}⭐️"
@@ -25,14 +30,16 @@ def menu_text(balance: float) -> str:
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
+
 @router.message(CommandStart())
-async def start(message: Message, bot: Bot):
+async def start(message: Message, bot: Bot, db):
     user_id = message.from_user.id
     username = message.from_user.username
     first_name = message.from_user.first_name
     last_name = message.from_user.last_name
 
-    register_user(user_id, username, first_name, last_name)
+    async with tx(db, immediate=False):
+        await register_user(db, user_id, username, first_name, last_name)
 
     try:
         member = await bot.get_chat_member(CHANNEL_ID, user_id)
@@ -41,13 +48,14 @@ async def start(message: Message, bot: Bot):
         return
 
     if member.status in ("member", "administrator", "creator"):
-        balance = get_balance(user_id)
+        balance = await get_balance(db, user_id)
         await message.answer(menu_text(balance), reply_markup=main_menu(is_admin(user_id)))
     else:
         await message.answer("Чтобы продолжить, подпишись на канал 👇", reply_markup=subscribe_keyboard())
 
+
 @router.callback_query(F.data == "check_sub")
-async def check_subscription(callback: CallbackQuery, bot: Bot):
+async def check_subscription(callback: CallbackQuery, bot: Bot, db):
     user_id = callback.from_user.id
 
     try:
@@ -57,16 +65,18 @@ async def check_subscription(callback: CallbackQuery, bot: Bot):
         return
 
     if member.status in ("member", "administrator", "creator"):
-        balance = get_balance(user_id)
+        balance = await get_balance(db, user_id)
         await callback.message.edit_text(menu_text(balance), reply_markup=main_menu(is_admin(user_id)))
     else:
         await callback.answer("❌ Ты ещё не подписан!", show_alert=True)
 
+
 @router.callback_query(F.data == "tasks")
-async def show_tasks(callback: CallbackQuery):
+async def show_tasks(callback: CallbackQuery, db):
     await callback.answer()
+
     user_id = callback.from_user.id
-    balance = get_balance(user_id)
+    balance = await get_balance(db, user_id)
 
     await callback.message.edit_text(
         "🚀 Задания скоро появятся\n\n"
@@ -77,16 +87,18 @@ async def show_tasks(callback: CallbackQuery):
         reply_markup=tasks_menu()
     )
 
+
 @router.callback_query(F.data == "back")
-async def back_to_main(callback: CallbackQuery):
+async def back_to_main(callback: CallbackQuery, db):
     user_id = callback.from_user.id
-    balance = get_balance(user_id)
+    balance = await get_balance(db, user_id)
     await callback.answer()
     await callback.message.edit_text(menu_text(balance), reply_markup=main_menu(is_admin(user_id)))
 
+
 @router.callback_query(F.data == "claim")
-async def claim_menu(callback: CallbackQuery):
-    campaigns = list_active_campaigns()
+async def claim_menu(callback: CallbackQuery, db):
+    campaigns = await list_active_campaigns(db)
 
     if not campaigns:
         await callback.answer("❌ Сейчас нет активных конкурсов", show_alert=True)
@@ -95,7 +107,8 @@ async def claim_menu(callback: CallbackQuery):
     await callback.answer()
 
     keyboard = []
-    for key, title, amount in campaigns:
+    for row in campaigns:
+        key, title, amount = row[0], row[1], row[2]
         keyboard.append([
             InlineKeyboardButton(text=f"🎁 Забрать {key}", callback_data=f"claim:{key}")
         ])
@@ -107,76 +120,80 @@ async def claim_menu(callback: CallbackQuery):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
     )
 
+
 @router.callback_query(F.data.startswith("claim:"))
-async def claim_for_campaign(callback: CallbackQuery):
+async def claim_for_campaign(callback: CallbackQuery, db):
     user_id = callback.from_user.id
     username = callback.from_user.username  # может быть None
     campaign_key = callback.data.split(":", 1)[1]
 
-    register_user(
-        user_id,
-        username,
-        callback.from_user.first_name,
-        callback.from_user.last_name
-    )
+    async with tx(db, immediate=False):
+        await register_user(
+            db,
+            user_id,
+            username,
+            callback.from_user.first_name,
+            callback.from_user.last_name
+        )
 
-    campaign = get_campaign(campaign_key)
+    campaign = await get_campaign(db, campaign_key)
     if not campaign:
         await callback.answer("❌ Конкурс не найден", show_alert=True)
         return
 
-    _key, title, reward_amount, status = campaign
+    _key, title, reward_amount, status = campaign[0], campaign[1], campaign[2], campaign[3]
 
     if status != "active":
         await callback.answer("❌ Этот конкурс сейчас неактивен", show_alert=True)
         return
 
     if username:
-        attach_winner_user_id(campaign_key, username, user_id)
+        async with tx(db, immediate=False):
+            await attach_winner_user_id(db, campaign_key, username, user_id)
 
-    if not is_winner(campaign_key, user_id, username):
+    if not await is_winner(db, campaign_key, user_id, username):
         await callback.answer("❌ Ты не в списке победителей этого конкурса", show_alert=True)
         return
 
-    if has_claim(user_id, campaign_key):
+    if await has_claim(db, user_id, campaign_key):
         await callback.answer("⚠️ Ты уже забрал награду в этом конкурсе", show_alert=True)
         return
 
     try:
-        conn.execute("BEGIN")
         amount = float(reward_amount)
 
-        add_balance(user_id, amount)
-        add_claim(user_id, campaign_key, amount)
+        async with tx(db):
+            await add_balance(db, user_id, amount)
+            await add_claim(db, user_id, campaign_key, amount)
 
-        ledger_add(
-            user_id=user_id,
-            delta=amount,
-            reason="claim",
-            campaign_key=campaign_key,
-            meta=title,
-        )
+            await ledger_add(
+                db,
+                user_id=user_id,
+                delta=amount,
+                reason="claim",
+                campaign_key=campaign_key,
+                meta=title,
+            )
 
-        conn.commit()
     except Exception:
-        conn.rollback()
         await callback.answer("❌ Ошибка клейма, попробуй ещё раз", show_alert=True)
         return
 
-    balance = get_balance(user_id)
+    balance = await get_balance(db, user_id)
     await callback.message.edit_text(
         f"✅ Ты получил {float(reward_amount):g}⭐️ ({title})\n\n"
         f"Баланс: {balance:.2f}⭐️",
         reply_markup=main_menu(is_admin(user_id)),
     )
 
+
 @router.callback_query(F.data == "withdraw")
-async def withdraw_menu(callback: CallbackQuery, state: FSMContext):
+async def withdraw_menu(callback: CallbackQuery, state: FSMContext, db):
     await callback.answer()
     await state.clear()
 
     user_id = callback.from_user.id
-    balance = get_balance(user_id)
+    balance = await get_balance(db, user_id)
 
     await callback.message.edit_text(
         "💸 Вывод средств\n\n"
@@ -186,15 +203,17 @@ async def withdraw_menu(callback: CallbackQuery, state: FSMContext):
         reply_markup=withdraw_menu_kb()
     )
 
+
 @router.callback_query(F.data.startswith("withdraw:method:"))
-async def withdraw_choose_method(callback: CallbackQuery, state: FSMContext):
+async def withdraw_choose_method(callback: CallbackQuery, state: FSMContext, db):
     await callback.answer()
+
     method = callback.data.split(":")[2]  # ton | stars
     await state.update_data(method=method)
     await state.set_state(WithdrawCreate.amount)
 
     user_id = callback.from_user.id
-    balance = get_balance(user_id)
+    balance = await get_balance(db, user_id)
 
     await callback.message.answer(
         f"Введи сумму вывода ⭐ (число).\n"
@@ -202,8 +221,9 @@ async def withdraw_choose_method(callback: CallbackQuery, state: FSMContext):
         f"Минимум: {MIN_WITHDRAW:g}⭐"
     )
 
+
 @router.message(WithdrawCreate.amount)
-async def withdraw_enter_amount(message: Message, state: FSMContext):
+async def withdraw_enter_amount(message: Message, state: FSMContext, db):
     user_id = message.from_user.id
     data = await state.get_data()
     method = data.get("method")
@@ -216,7 +236,7 @@ async def withdraw_enter_amount(message: Message, state: FSMContext):
         await message.answer("❌ Введи число > 0, например 50")
         return
 
-    balance = get_balance(user_id)
+    balance = await get_balance(db, user_id)
     if amount < MIN_WITHDRAW:
         await message.answer(f"❌ Минимальная сумма вывода: {MIN_WITHDRAW:g}⭐")
         return
@@ -231,21 +251,19 @@ async def withdraw_enter_amount(message: Message, state: FSMContext):
         await message.answer("Введи TON-адрес кошелька для выплаты:")
         return
 
+    # method == "stars"
     try:
-        conn.execute("BEGIN IMMEDIATE")
-
-        wid = create_withdrawal(user_id, amount, method="stars", details=None)
-
-        add_balance(user_id, -amount)
-        ledger_add(
-            user_id=user_id,
-            delta=-amount,
-            reason="withdraw_hold",
-            withdrawal_id=wid,
-            meta=f"method={method}",
-        )
-
-        conn.commit()
+        async with tx(db):
+            wid = await create_withdrawal(db, user_id, amount, method="stars", details=None)
+            await add_balance(db, user_id, -amount)
+            await ledger_add(
+                db,
+                user_id=user_id,
+                delta=-amount,
+                reason="withdraw_hold",
+                withdrawal_id=wid,
+                meta=f"method={method}",
+            )
 
         username = message.from_user.username
         name = f"@{username}" if username else f"id:{user_id}"
@@ -254,25 +272,23 @@ async def withdraw_enter_amount(message: Message, state: FSMContext):
             f"💸 Новая заявка на вывод\n\n"
             f"👤 {name}\n"
             f"⭐ {amount:g}\n"
-            f"🔧 {method.upper()}\n"
+            f"🔧 {method}\n"
+            f"\nID заявки: #{wid}"
         )
 
-        admin_text += f"\nID заявки: #{wid}"
-
         bot: Bot = message.bot
-
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(admin_id, admin_text)
             except:
                 pass
+
     except Exception as e:
-        conn.rollback()
         await message.answer(f"❌ Ошибка создания заявки: {type(e).__name__}: {e}")
         return
 
     await state.clear()
-    new_balance = get_balance(user_id)
+    new_balance = await get_balance(db, user_id)
     await message.answer(
         f"✅ Заявка на вывод создана\n"
         f"ID: #{wid}\n"
@@ -281,63 +297,60 @@ async def withdraw_enter_amount(message: Message, state: FSMContext):
         f"Баланс: {new_balance:.2f}⭐"
     )
 
+
 @router.message(WithdrawCreate.details)
-async def withdraw_enter_details(message: Message, state: FSMContext):
+async def withdraw_enter_details(message: Message, state: FSMContext, db):
     user_id = message.from_user.id
     data = await state.get_data()
     amount = float(data["amount"])
     details = message.text.strip()
-    method="ton"
+    method = "ton"
 
     if len(details) < 10:
         await message.answer("❌ Похоже на неправильный TON-адрес. Введи ещё раз.")
         return
 
     try:
-        conn.execute("BEGIN IMMEDIATE")
-
-        wid = create_withdrawal(user_id, amount, method, details=details)
-
-        add_balance(user_id, -amount)
-        ledger_add(
-            user_id=user_id,
-            delta=-amount,
-            reason="withdraw_hold",
-            withdrawal_id=wid,
-            meta=f"method={method}",
-        )
-
-        conn.commit()
+        async with tx(db):
+            wid = await create_withdrawal(db, user_id, amount, method, details=details)
+            await add_balance(db, user_id, -amount)
+            await ledger_add(
+                db,
+                user_id=user_id,
+                delta=-amount,
+                reason="withdraw_hold",
+                withdrawal_id=wid,
+                meta=f"method={method}",
+            )
 
         username = message.from_user.username
         name = f"@{username}" if username else f"id:{user_id}"
-        
+
         admin_text = (
             f"💸 Новая заявка на вывод\n\n"
             f"👤 {name}\n"
             f"⭐ {amount:g}\n"
             f"🔧 {method.upper()}\n"
         )
-        
+
         if details:
             admin_text += f"🧾 {details}\n"
-        
+
         admin_text += f"\nID заявки: #{wid}"
-        
+
         bot: Bot = message.bot
-        
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(admin_id, admin_text)
             except:
                 pass
+
     except Exception as e:
-        conn.rollback()
         await message.answer(f"❌ Ошибка создания заявки: {type(e).__name__}: {e}")
         return
 
     await state.clear()
-    new_balance = get_balance(user_id)
+    new_balance = await get_balance(db, user_id)
     await message.answer(
         f"✅ Заявка на вывод создана\n"
         f"ID: #{wid}\n"
@@ -347,12 +360,13 @@ async def withdraw_enter_details(message: Message, state: FSMContext):
         f"Баланс: {new_balance:.2f}⭐"
     )
 
+
 @router.callback_query(F.data == "withdraw:my")
-async def withdraw_my(callback: CallbackQuery):
+async def withdraw_my(callback: CallbackQuery, db):
     await callback.answer()
     user_id = callback.from_user.id
 
-    rows = user_withdrawals(user_id, limit=20)
+    rows = await user_withdrawals(db, user_id, limit=20)
 
     if not rows:
         await callback.message.edit_text(
@@ -369,9 +383,10 @@ async def withdraw_my(callback: CallbackQuery):
     }
 
     lines = []
-    for wid, amount, method, status, created in rows:
+    for r in rows:
+        wid, amount, method, status, created = r[0], r[1], r[2], r[3], r[4]
         lines.append(
-            f"#{wid} • {float(amount):g}⭐ • {method.upper()} • {status_map.get(status, status)}\n"
+            f"#{wid} • {float(amount):g}⭐ • {str(method).upper()} • {status_map.get(status, status)}\n"
             f"{created}"
         )
 
@@ -380,13 +395,14 @@ async def withdraw_my(callback: CallbackQuery):
         reply_markup=withdraw_back_kb()
     )
 
+
 @router.callback_query(F.data == "withdraw:new")
-async def withdraw_new(callback: CallbackQuery, state: FSMContext):
+async def withdraw_new(callback: CallbackQuery, state: FSMContext, db):
     await callback.answer()
     await state.clear()
 
     user_id = callback.from_user.id
-    balance = get_balance(user_id)
+    balance = await get_balance(db, user_id)
 
     await callback.message.edit_text(
         "➕ Создать заявку на вывод\n\n"

@@ -8,3 +8,4 @@ ADMIN_IDS = set(map(int, os.getenv("ADMIN_IDS", "").split(",")))\
     else set()
 
 MIN_WITHDRAW = 100.0
+DB_PATH = "bot.db"

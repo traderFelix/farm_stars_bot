@@ -1,12 +1,38 @@
-import sqlite3
+import aiosqlite
+from typing import Optional, List, Tuple, Any
+from contextlib import asynccontextmanager
+from config import DB_PATH
 
-from typing import Optional, List
 
-conn = sqlite3.connect("bot.db")
-cursor = conn.cursor()
+# ---------- Connection / TX ----------
 
-def init_db():
-    cursor.executescript("""
+async def open_db() -> aiosqlite.Connection:
+    db = await aiosqlite.connect(DB_PATH, timeout=30)
+    db.row_factory = aiosqlite.Row
+
+    await db.execute("PRAGMA journal_mode=WAL;")
+    await db.execute("PRAGMA synchronous=NORMAL;")
+    await db.execute("PRAGMA foreign_keys=ON;")
+    await db.execute("PRAGMA busy_timeout=30000;")
+
+    return db
+
+async def close_db(db: aiosqlite.Connection) -> None:
+    await db.close()
+
+@asynccontextmanager
+async def tx(db: aiosqlite.Connection, immediate: bool = True):
+    await db.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
+    try:
+        yield
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def init_db(db: aiosqlite.Connection) -> None:
+    await db.executescript("""
     CREATE TABLE IF NOT EXISTS users (
       user_id INTEGER PRIMARY KEY,
       username TEXT,
@@ -61,7 +87,7 @@ def init_db():
       created_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(user_id)
     );
-    
+
     CREATE TABLE IF NOT EXISTS withdrawals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -83,32 +109,36 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
     """)
-
-    conn.commit()
+    await db.commit()
 
 
 # ---------- Users ----------
 
-def register_user(user_id: int, username: Optional[str], first_name: Optional[str] = None, last_name: Optional[str] = None):
+async def register_user(
+        db: aiosqlite.Connection,
+        user_id: int,
+        username: Optional[str],
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None
+) -> None:
     u = (username or "").strip().lstrip("@") or None
     fn = (first_name or "").strip() or None
     ln = (last_name or "").strip() or None
 
-    cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-    exists = cursor.fetchone() is not None
+    async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as cur:
+        exists = await cur.fetchone() is not None
 
     if not exists:
-        cursor.execute(
+        await db.execute(
             """
             INSERT INTO users (user_id, username, tg_first_name, tg_last_name, balance, created_at, last_seen_at)
             VALUES (?, ?, ?, ?, 0, datetime('now'), datetime('now'))
             """,
             (user_id, u, fn, ln),
         )
-        conn.commit()
         return
 
-    cursor.execute(
+    await db.execute(
         """
         UPDATE users
         SET username = COALESCE(?, username),
@@ -119,45 +149,47 @@ def register_user(user_id: int, username: Optional[str], first_name: Optional[st
         """,
         (u, fn, ln, user_id),
     )
-    conn.commit()
 
+async def get_balance(db: aiosqlite.Connection, user_id: int) -> float:
+    async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cur:
+        row = await cur.fetchone()
+    return float(row["balance"]) if row else 0.0
 
-def get_balance(user_id: int) -> float:
-    cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    return float(row[0]) if row else 0.0
-
-
-def add_balance(user_id: int, amount: float):
-    cursor.execute(
+async def add_balance(db: aiosqlite.Connection, user_id: int, amount: float) -> None:
+    await db.execute(
         "UPDATE users SET balance = balance + ? WHERE user_id = ?",
-        (float(amount), user_id),
+        (float(amount), int(user_id)),
     )
 
+async def total_balances(db: aiosqlite.Connection) -> float:
+    async with db.execute("SELECT COALESCE(SUM(balance), 0) AS s FROM users") as cur:
+        row = await cur.fetchone()
+    return float(row["s"] or 0.0)
 
-def total_balances() -> float:
-    cursor.execute("SELECT COALESCE(SUM(balance), 0) FROM users")
-    row = cursor.fetchone()
-    return float(row[0]) if row and row[0] is not None else 0.0
-
-
-def top_users_by_balance(limit: int = 10):
-    cursor.execute(
-        """
+async def top_users_by_balance(db: aiosqlite.Connection, limit: int = 10):
+    async with db.execute(
+            """
         SELECT username, balance
         FROM users
         ORDER BY balance DESC
         LIMIT ?
         """,
-        (int(limit),),
-    )
-    return cursor.fetchall()
+            (int(limit),),
+    ) as cur:
+        return await cur.fetchall()
 
 
 # ---------- Campaigns ----------
 
-def upsert_campaign(campaign_key: str, title: str, reward_amount: float, status: str = "draft", description: Optional[str] = None):
-    cursor.execute(
+async def upsert_campaign(
+        db: aiosqlite.Connection,
+        campaign_key: str,
+        title: str,
+        reward_amount: float,
+        status: str = "draft",
+        description: Optional[str] = None,
+) -> None:
+    await db.execute(
         """
         INSERT INTO campaigns (campaign_key, title, reward_amount, status, description)
         VALUES (?, ?, ?, ?, ?)
@@ -169,114 +201,102 @@ def upsert_campaign(campaign_key: str, title: str, reward_amount: float, status:
         """,
         (campaign_key, title, float(reward_amount), status, description),
     )
-    conn.commit()
 
-
-def set_campaign_status(campaign_key: str, status: str):
-    cursor.execute(
+async def set_campaign_status(db: aiosqlite.Connection, campaign_key: str, status: str) -> None:
+    await db.execute(
         "UPDATE campaigns SET status = ? WHERE campaign_key = ?",
         (status, campaign_key),
     )
-    conn.commit()
 
+async def delete_campaign(db: aiosqlite.Connection, campaign_key: str) -> None:
+    await db.execute("DELETE FROM claims WHERE campaign_key = ?", (campaign_key,))
+    await db.execute("DELETE FROM campaign_winners WHERE campaign_key = ?", (campaign_key,))
+    await db.execute("DELETE FROM campaigns WHERE campaign_key = ?", (campaign_key,))
 
-def delete_campaign(campaign_key: str):
-    cursor.execute("DELETE FROM claims WHERE campaign_key = ?", (campaign_key,))
-    cursor.execute("DELETE FROM campaign_winners WHERE campaign_key = ?", (campaign_key,))
-    cursor.execute("DELETE FROM campaigns WHERE campaign_key = ?", (campaign_key,))
-    conn.commit()
+async def get_campaign(db: aiosqlite.Connection, campaign_key: str):
+    async with db.execute(
+            "SELECT campaign_key, title, reward_amount, status FROM campaigns WHERE campaign_key = ?",
+            (campaign_key,),
+    ) as cur:
+        return await cur.fetchone()
 
-
-def get_campaign(campaign_key: str):
-    cursor.execute(
-        "SELECT campaign_key, title, reward_amount, status FROM campaigns WHERE campaign_key = ?",
-        (campaign_key,),
-    )
-    return cursor.fetchone()
-
-
-def list_campaigns():
-    cursor.execute(
-        """
+async def list_campaigns(db: aiosqlite.Connection):
+    async with db.execute(
+            """
         SELECT campaign_key, reward_amount, status, created_at
         FROM campaigns
         ORDER BY datetime(created_at) DESC
         """
-    )
-    return cursor.fetchall()
+    ) as cur:
+        return await cur.fetchall()
 
-
-def list_campaigns_latest(limit: int = 5):
-    cursor.execute(
-        """
+async def list_campaigns_latest(db: aiosqlite.Connection, limit: int = 5):
+    async with db.execute(
+            """
         SELECT campaign_key, reward_amount, status, created_at
         FROM campaigns
         ORDER BY datetime(created_at) DESC
         LIMIT ?
         """,
-        (int(limit),),
-    )
-    return cursor.fetchall()
+            (int(limit),),
+    ) as cur:
+        return await cur.fetchall()
 
-
-def list_active_campaigns():
-    cursor.execute(
-        """
+async def list_active_campaigns(db: aiosqlite.Connection):
+    async with db.execute(
+            """
         SELECT campaign_key, title, reward_amount
         FROM campaigns
         WHERE status = 'active'
         ORDER BY datetime(created_at) DESC
         """
-    )
-    return cursor.fetchall()
+    ) as cur:
+        return await cur.fetchall()
 
-
-def campaigns_status_counts():
-    cursor.execute("SELECT status, COUNT(*) FROM campaigns GROUP BY status")
-    rows = cursor.fetchall()
+async def campaigns_status_counts(db: aiosqlite.Connection) -> Tuple[int, int, int]:
+    async with db.execute("SELECT status, COUNT(*) AS cnt FROM campaigns GROUP BY status") as cur:
+        rows = await cur.fetchall()
 
     counts = {"active": 0, "ended": 0, "draft": 0}
-    for st, cnt in rows:
-        counts[str(st)] = int(cnt)
+    for r in rows:
+        counts[str(r["status"])] = int(r["cnt"])
 
     return counts["active"], counts["ended"], counts["draft"]
 
 
 # ---------- Winners ----------
 
-def add_winners(campaign_key: str, usernames: List[str]) -> int:
+async def add_winners(db: aiosqlite.Connection, campaign_key: str, usernames: List[str]) -> int:
     count = 0
     for u in usernames:
         u = (u or "").strip().lstrip("@")
         if not u:
             continue
-        cursor.execute(
+        await db.execute(
             "INSERT OR IGNORE INTO campaign_winners (campaign_key, username) VALUES (?, ?)",
             (campaign_key, u),
         )
         count += 1
-    conn.commit()
     return count
 
+async def list_winners(db: aiosqlite.Connection, campaign_key: str) -> List[str]:
+    async with db.execute(
+            "SELECT username FROM campaign_winners WHERE campaign_key = ? ORDER BY added_at ASC",
+            (campaign_key,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [r["username"] for r in rows]
 
-def list_winners(campaign_key: str) -> List[str]:
-    cursor.execute(
-        "SELECT username FROM campaign_winners WHERE campaign_key = ? ORDER BY added_at ASC",
-        (campaign_key,),
-    )
-    return [r[0] for r in cursor.fetchall()]
+async def winners_count(db: aiosqlite.Connection, campaign_key: str) -> int:
+    async with db.execute("SELECT COUNT(*) AS c FROM campaign_winners WHERE campaign_key = ?", (campaign_key,)) as cur:
+        row = await cur.fetchone()
+    return int(row["c"])
 
-
-def winners_count(campaign_key: str) -> int:
-    cursor.execute("SELECT COUNT(*) FROM campaign_winners WHERE campaign_key = ?", (campaign_key,))
-    return int(cursor.fetchone()[0])
-
-
-def attach_winner_user_id(campaign_key: str, username: str, user_id: int) -> None:
+async def attach_winner_user_id(db: aiosqlite.Connection, campaign_key: str, username: str, user_id: int) -> None:
     u = (username or "").strip().lstrip("@")
     if not u:
         return
-    cursor.execute(
+    await db.execute(
         """
         UPDATE campaign_winners
         SET user_id = ?
@@ -286,52 +306,49 @@ def attach_winner_user_id(campaign_key: str, username: str, user_id: int) -> Non
         """,
         (int(user_id), campaign_key, u),
     )
-    conn.commit()
 
-
-def is_winner(campaign_key: str, user_id: int, username: Optional[str]) -> bool:
-    cursor.execute(
-        "SELECT 1 FROM campaign_winners WHERE campaign_key = ? AND user_id = ? LIMIT 1",
-        (campaign_key, int(user_id)),
-    )
-    if cursor.fetchone() is not None:
-        return True
+async def is_winner(db: aiosqlite.Connection, campaign_key: str, user_id: int, username: Optional[str]) -> bool:
+    async with db.execute(
+            "SELECT 1 FROM campaign_winners WHERE campaign_key = ? AND user_id = ? LIMIT 1",
+            (campaign_key, int(user_id)),
+    ) as cur:
+        if await cur.fetchone() is not None:
+            return True
 
     u = (username or "").strip().lstrip("@")
     if not u:
         return False
 
-    cursor.execute(
-        "SELECT 1 FROM campaign_winners WHERE campaign_key = ? AND username = ? LIMIT 1",
-        (campaign_key, u),
-    )
-    return cursor.fetchone() is not None
+    async with db.execute(
+            "SELECT 1 FROM campaign_winners WHERE campaign_key = ? AND username = ? LIMIT 1",
+            (campaign_key, u),
+    ) as cur:
+        return await cur.fetchone() is not None
 
-
-def delete_winner_if_not_claimed(campaign_key: str, username: str):
+async def delete_winner_if_not_claimed(db: aiosqlite.Connection, campaign_key: str, username: str):
     u = (username or "").strip().lstrip("@")
     if not u:
         return False, "Пустой username"
 
-    cursor.execute(
-        "SELECT user_id FROM campaign_winners WHERE campaign_key = ? AND username = ?",
-        (campaign_key, u),
-    )
-    row = cursor.fetchone()
+    async with db.execute(
+            "SELECT user_id FROM campaign_winners WHERE campaign_key = ? AND username = ?",
+            (campaign_key, u),
+    ) as cur:
+        row = await cur.fetchone()
     if row is None:
         return False, "Этого username нет в списке победителей"
 
-    winner_user_id = row[0]
+    winner_user_id = row["user_id"]
 
     user_id_by_username = None
     if winner_user_id is None:
-        cursor.execute("SELECT user_id FROM users WHERE username = ? LIMIT 1", (u,))
-        r2 = cursor.fetchone()
+        async with db.execute("SELECT user_id FROM users WHERE username = ? LIMIT 1", (u,)) as cur:
+            r2 = await cur.fetchone()
         if r2:
-            user_id_by_username = r2[0]
+            user_id_by_username = r2["user_id"]
 
-    cursor.execute(
-        """
+    async with db.execute(
+            """
         SELECT 1
         FROM claims cl
         WHERE cl.campaign_key = ?
@@ -341,39 +358,36 @@ def delete_winner_if_not_claimed(campaign_key: str, username: str):
           )
         LIMIT 1
         """,
-        (campaign_key, winner_user_id, winner_user_id, user_id_by_username, user_id_by_username),
-    )
-    if cursor.fetchone() is not None:
-        return False, "Нельзя удалить: этот победитель уже заклеймил"
+            (campaign_key, winner_user_id, winner_user_id, user_id_by_username, user_id_by_username),
+    ) as cur:
+        if await cur.fetchone() is not None:
+            return False, "Нельзя удалить: этот победитель уже заклеймил"
 
-    cursor.execute(
+    await db.execute(
         "DELETE FROM campaign_winners WHERE campaign_key = ? AND username = ?",
         (campaign_key, u),
     )
-    conn.commit()
     return True, "Удалено"
 
 
 # ---------- Claims ----------
 
-def has_claim(user_id: int, campaign_key: str) -> bool:
-    cursor.execute(
-        "SELECT 1 FROM claims WHERE user_id = ? AND campaign_key = ?",
-        (int(user_id), campaign_key),
-    )
-    return cursor.fetchone() is not None
+async def has_claim(db: aiosqlite.Connection, user_id: int, campaign_key: str) -> bool:
+    async with db.execute(
+            "SELECT 1 FROM claims WHERE user_id = ? AND campaign_key = ?",
+            (int(user_id), campaign_key),
+    ) as cur:
+        return await cur.fetchone() is not None
 
-
-def add_claim(user_id: int, campaign_key: str, amount: float) -> None:
-    cursor.execute(
+async def add_claim(db: aiosqlite.Connection, user_id: int, campaign_key: str, amount: float) -> None:
+    await db.execute(
         "INSERT INTO claims (user_id, campaign_key, amount) VALUES (?, ?, ?)",
         (int(user_id), campaign_key, float(amount)),
     )
 
-
-def claimed_usernames(campaign_key: str) -> List[str]:
-    cursor.execute(
-        """
+async def claimed_usernames(db: aiosqlite.Connection, campaign_key: str) -> List[str]:
+    async with db.execute(
+            """
         SELECT u.username
         FROM claims c
         JOIN users u ON u.user_id = c.user_id
@@ -382,50 +396,49 @@ def claimed_usernames(campaign_key: str) -> List[str]:
           AND u.username != ''
         ORDER BY datetime(c.claimed_at) ASC
         """,
-        (campaign_key,),
-    )
-    return [r[0] for r in cursor.fetchall()]
+            (campaign_key,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [r["username"] for r in rows]
 
+async def campaign_stats(db: aiosqlite.Connection, campaign_key: str):
+    async with db.execute(
+            "SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total FROM claims WHERE campaign_key = ?",
+            (campaign_key,),
+    ) as cur:
+        row = await cur.fetchone()
+    claims_count = int(row["cnt"] or 0)
+    total_paid = float(row["total"] or 0.0)
 
-def campaign_stats(campaign_key: str):
-    cursor.execute(
-        "SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM claims WHERE campaign_key = ?",
-        (campaign_key,),
-    )
-    claims_count, total_paid = cursor.fetchone()
-    claims_count = int(claims_count or 0)
-    total_paid = float(total_paid or 0.0)
-
-    cursor.execute("SELECT COUNT(*) FROM campaign_winners WHERE campaign_key = ?", (campaign_key,))
-    winners_cnt = int(cursor.fetchone()[0])
+    async with db.execute("SELECT COUNT(*) AS c FROM campaign_winners WHERE campaign_key = ?", (campaign_key,)) as cur:
+        r2 = await cur.fetchone()
+    winners_cnt = int(r2["c"])
 
     return claims_count, winners_cnt, total_paid
 
-
-def global_claims_stats():
-    cursor.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM claims")
-    cnt, total = cursor.fetchone()
-    return int(cnt or 0), float(total or 0.0)
+async def global_claims_stats(db: aiosqlite.Connection):
+    async with db.execute("SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total FROM claims") as cur:
+        row = await cur.fetchone()
+    return int(row["cnt"] or 0), float(row["total"] or 0.0)
 
 
 # ---------- Totals for admin dashboard ----------
 
-def total_assigned_amount() -> float:
-    cursor.execute(
-        """
-        SELECT COALESCE(SUM(c.reward_amount), 0)
+async def total_assigned_amount(db: aiosqlite.Connection) -> float:
+    async with db.execute(
+            """
+        SELECT COALESCE(SUM(c.reward_amount), 0) AS total
         FROM campaign_winners w
         JOIN campaigns c ON c.campaign_key = w.campaign_key
         """
-    )
-    row = cursor.fetchone()
-    return float(row[0]) if row and row[0] is not None else 0.0
+    ) as cur:
+        row = await cur.fetchone()
+    return float(row["total"] or 0.0)
 
-
-def unclaimed_total_amount() -> float:
-    cursor.execute(
-        """
-        SELECT COALESCE(SUM(c.reward_amount), 0)
+async def unclaimed_total_amount(db: aiosqlite.Connection) -> float:
+    async with db.execute(
+            """
+        SELECT COALESCE(SUM(c.reward_amount), 0) AS total
         FROM campaign_winners w
         JOIN campaigns c ON c.campaign_key = w.campaign_key
         LEFT JOIN users u ON u.username = w.username
@@ -439,61 +452,66 @@ def unclaimed_total_amount() -> float:
               )
         )
         """
-    )
-    row = cursor.fetchone()
-    return float(row[0]) if row and row[0] is not None else 0.0
+    ) as cur:
+        row = await cur.fetchone()
+    return float(row["total"] or 0.0)
 
-def users_total_count() -> int:
-    cursor.execute("SELECT COUNT(*) FROM users")
-    return int(cursor.fetchone()[0])
+async def users_total_count(db: aiosqlite.Connection) -> int:
+    async with db.execute("SELECT COUNT(*) AS c FROM users") as cur:
+        row = await cur.fetchone()
+    return int(row["c"])
 
+async def users_new_since_hours(db: aiosqlite.Connection, hours: int) -> int:
+    async with db.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE created_at >= datetime('now', ?)",
+            (f"-{int(hours)} hours",),
+    ) as cur:
+        row = await cur.fetchone()
+    return int(row["c"])
 
-def users_new_since_hours(hours: int) -> int:
-    cursor.execute(
-        "SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', ?)",
-        (f"-{int(hours)} hours",),
-    )
-    return int(cursor.fetchone()[0])
+async def users_new_since_days(db: aiosqlite.Connection, days: int) -> int:
+    async with db.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE created_at >= datetime('now', ?)",
+            (f"-{int(days)} days",),
+    ) as cur:
+        row = await cur.fetchone()
+    return int(row["c"])
 
+async def users_active_since_days(db: aiosqlite.Connection, days: int) -> int:
+    async with db.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE last_seen_at >= datetime('now', ?)",
+            (f"-{int(days)} days",),
+    ) as cur:
+        row = await cur.fetchone()
+    return int(row["c"])
 
-def users_new_since_days(days: int) -> int:
-    cursor.execute(
-        "SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', ?)",
-        (f"-{int(days)} days",),
-    )
-    return int(cursor.fetchone()[0])
-
-
-def users_active_since_days(days: int) -> int:
-    cursor.execute(
-        "SELECT COUNT(*) FROM users WHERE last_seen_at >= datetime('now', ?)",
-        (f"-{int(days)} days",),
-    )
-    return int(cursor.fetchone()[0])
-
-
-def users_growth_by_day(days: int = 30):
-    cursor.execute(
-        """
+async def users_growth_by_day(db: aiosqlite.Connection, days: int = 30):
+    async with db.execute(
+            """
         SELECT date(created_at) AS d, COUNT(*) AS cnt
         FROM users
         WHERE created_at >= datetime('now', ?)
         GROUP BY d
         ORDER BY d ASC
         """,
-        (f"-{int(days)} days",),
-    )
-    return [(row[0], int(row[1])) for row in cursor.fetchall()]
+            (f"-{int(days)} days",),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [(r["d"], int(r["cnt"])) for r in rows]
 
-def ledger_add(
+
+# ---------- Ledger / Withdrawals ----------
+
+async def ledger_add(
+        db: aiosqlite.Connection,
         user_id: int,
         delta: float,
         reason: str,
         campaign_key: Optional[str] = None,
         withdrawal_id: Optional[int] = None,
         meta: Optional[str] = None,
-):
-    cursor.execute(
+) -> None:
+    await db.execute(
         """
         INSERT INTO ledger (user_id, delta, reason, campaign_key, withdrawal_id, meta, created_at)
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -501,52 +519,53 @@ def ledger_add(
         (int(user_id), float(delta), reason, campaign_key, withdrawal_id, meta),
     )
 
-
-def ledger_last(user_id: int, limit: int = 20):
-    cursor.execute(
-        """
+async def ledger_last(db: aiosqlite.Connection, user_id: int, limit: int = 20):
+    async with db.execute(
+            """
         SELECT created_at, delta, reason, campaign_key, meta
         FROM ledger
         WHERE user_id = ?
         ORDER BY datetime(created_at) DESC
         LIMIT ?
         """,
-        (int(user_id), int(limit)),
-    )
-    return cursor.fetchall()
+            (int(user_id), int(limit)),
+    ) as cur:
+        return await cur.fetchall()
 
+async def ledger_sum(db: aiosqlite.Connection, user_id: int) -> float:
+    async with db.execute(
+            "SELECT COALESCE(SUM(delta), 0) AS s FROM ledger WHERE user_id = ?",
+            (int(user_id),),
+    ) as cur:
+        row = await cur.fetchone()
+    return float(row["s"] or 0.0)
 
-def ledger_sum(user_id: int) -> float:
-    cursor.execute("SELECT COALESCE(SUM(delta), 0) FROM ledger WHERE user_id = ?", (int(user_id),))
-    return float(cursor.fetchone()[0])
-
-def ledger_user_history(user_id: int, limit: int = 20):
-    cursor.execute(
-        """
+async def ledger_user_history(db: aiosqlite.Connection, user_id: int, limit: int = 20):
+    async with db.execute(
+            """
         SELECT created_at, delta, reason, campaign_key
         FROM ledger
         WHERE user_id = ?
         ORDER BY datetime(created_at) DESC
         LIMIT ?
         """,
-        (int(user_id), int(limit)),
-    )
-    return cursor.fetchall()
+            (int(user_id), int(limit)),
+    ) as cur:
+        return await cur.fetchall()
 
-def create_withdrawal(user_id: int, amount: float, method: str, details: Optional[str] = None) -> int:
-    cursor.execute(
+async def create_withdrawal(db: aiosqlite.Connection, user_id: int, amount: float, method: str, details: Optional[str] = None) -> int:
+    cur = await db.execute(
         """
         INSERT INTO withdrawals (user_id, amount, method, details, status)
         VALUES (?, ?, ?, ?, 'pending')
         """,
         (int(user_id), float(amount), method, details),
     )
-    return int(cursor.lastrowid)
+    return int(cur.lastrowid)
 
-
-def list_withdrawals(status: str = "pending", limit: int = 20):
-    cursor.execute(
-        """
+async def list_withdrawals(db: aiosqlite.Connection, status: str = "pending", limit: int = 20):
+    async with db.execute(
+            """
         SELECT w.id, w.user_id, u.username, w.amount, w.method, w.details, w.status, w.created_at
         FROM withdrawals w
         LEFT JOIN users u ON u.user_id = w.user_id
@@ -554,26 +573,24 @@ def list_withdrawals(status: str = "pending", limit: int = 20):
         ORDER BY datetime(w.created_at) DESC
         LIMIT ?
         """,
-        (status, int(limit)),
-    )
-    return cursor.fetchall()
+            (status, int(limit)),
+    ) as cur:
+        return await cur.fetchall()
 
-
-def get_withdrawal(withdrawal_id: int):
-    cursor.execute(
-        """
+async def get_withdrawal(db: aiosqlite.Connection, withdrawal_id: int):
+    async with db.execute(
+            """
         SELECT w.id, w.user_id, u.username, w.amount, w.method, w.details, w.status, w.created_at
         FROM withdrawals w
         LEFT JOIN users u ON u.user_id = w.user_id
         WHERE w.id = ?
         """,
-        (int(withdrawal_id),),
-    )
-    return cursor.fetchone()
+            (int(withdrawal_id),),
+    ) as cur:
+        return await cur.fetchone()
 
-
-def set_withdrawal_status(withdrawal_id: int, status: str, processed_by: Optional[int] = None):
-    cursor.execute(
+async def set_withdrawal_status(db: aiosqlite.Connection, withdrawal_id: int, status: str, processed_by: Optional[int] = None) -> None:
+    await db.execute(
         """
         UPDATE withdrawals
         SET status = ?,
@@ -584,22 +601,22 @@ def set_withdrawal_status(withdrawal_id: int, status: str, processed_by: Optiona
         (status, processed_by, int(withdrawal_id)),
     )
 
-def user_withdrawals(user_id: int, limit: int = 20):
-    cursor.execute(
-        """
+async def user_withdrawals(db: aiosqlite.Connection, user_id: int, limit: int = 20):
+    async with db.execute(
+            """
         SELECT id, amount, method, status, created_at
         FROM withdrawals
         WHERE user_id = ?
         ORDER BY datetime(created_at) DESC
         LIMIT ?
         """,
-        (int(user_id), int(limit)),
-    )
-    return cursor.fetchall()
+            (int(user_id), int(limit)),
+    ) as cur:
+        return await cur.fetchall()
 
-def balances_audit(limit: int = 10):
-    cursor.execute(
-        """
+async def balances_audit(db: aiosqlite.Connection, limit: int = 10):
+    async with db.execute(
+            """
         SELECT
           u.user_id,
           u.username,
@@ -613,6 +630,6 @@ def balances_audit(limit: int = 10):
         ORDER BY ABS(diff) DESC
         LIMIT ?
         """,
-        (int(limit),),
-    )
-    return cursor.fetchall()
+            (int(limit),),
+    ) as cur:
+        return await cur.fetchall()
