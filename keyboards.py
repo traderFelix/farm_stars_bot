@@ -54,7 +54,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📋 Все конкурсы", callback_data="adm:list")],
             [InlineKeyboardButton(text="➕ Создать конкурс", callback_data="adm:new")],
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="adm:stats_menu")],
+            [InlineKeyboardButton(text="📊 Статистика конкурсов", callback_data="adm:stats_menu")],
             [InlineKeyboardButton(text="📈 Рост пользователей", callback_data="adm:growth_png")],
             [InlineKeyboardButton(text="📜 Леджер (последние)", callback_data="adm:ledger_last")],
             [InlineKeyboardButton(text="🔎 Баланс пользователя", callback_data="adm:user_balance")],

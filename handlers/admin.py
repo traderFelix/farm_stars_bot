@@ -592,7 +592,10 @@ async def adm_withdraw_list(callback: CallbackQuery, db):
     rows = await list_withdrawals(db, status="pending", limit=20)
 
     if not rows:
-        await callback.answer("✅ Нет заявок на вывод", show_alert=True)
+        await callback.message.edit_text(
+            "✅ Нет заявок на вывод (pending).",
+            reply_markup=admin_back_kb()
+        )
         return
 
     await callback.message.edit_text(
