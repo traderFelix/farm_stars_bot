@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW
 
 from db import (
-    tx,
+    tx, fmt_stars,
     register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough,
     claim_reward, list_active_campaigns
 )
@@ -22,7 +22,7 @@ router = Router()
 
 
 def menu_text(balance: float) -> str:
-    return "Чтобы получить больше ⭐️, выполняйте задания\n\n" + f"Баланс: {balance:.2f}⭐️"
+    return "Чтобы получить больше ⭐️, выполняйте задания\n\n" + f"Баланс: {fmt_stars(balance)}⭐️"
 
 
 def is_admin(user_id: int) -> bool:
@@ -81,7 +81,7 @@ async def show_tasks(callback: CallbackQuery, db):
         "Сейчас раздел находится в разработке.\n"
         "Готовим интересную механику заработка ⭐\n\n"
         "Следите за обновлениями 👀\n\n"
-        f"Баланс: {balance:.2f}⭐️",
+        f"Баланс: {fmt_stars(balance)}⭐️",
         reply_markup=tasks_menu()
     )
 
@@ -139,7 +139,7 @@ async def claim_for_campaign(callback: CallbackQuery, db):
         return
 
     await callback.message.edit_text(
-        f"{msg}\n\nБаланс: {new_balance:.2f}⭐️",
+        f"{msg}\n\nБаланс: {fmt_stars(new_balance)}⭐️",
         reply_markup=main_menu(is_admin(user_id)),
     )
 
@@ -153,7 +153,7 @@ async def withdraw_menu(callback: CallbackQuery, state: FSMContext, db):
 
     await callback.message.edit_text(
         "💸 Вывод средств\n\n"
-        f"Доступно: {balance:.2f}⭐\n"
+        f"Доступно: {fmt_stars(balance)}⭐\n"
         f"Минимум: {MIN_WITHDRAW:g}⭐\n\n"
         "Выбери действие:",
         reply_markup=withdraw_menu_kb()
@@ -173,7 +173,7 @@ async def withdraw_choose_method(callback: CallbackQuery, state: FSMContext, db)
 
     await callback.message.answer(
         f"Введи сумму вывода ⭐ (число).\n"
-        f"Доступно: {balance:.2f}⭐\n"
+        f"Доступно: {fmt_stars(balance)}⭐\n"
         f"Минимум: {MIN_WITHDRAW:g}⭐"
     )
 
@@ -253,7 +253,7 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
         f"ID: #{wid}\n"
         f"Сумма: {amount:g}⭐\n"
         f"Способ: Telegram Stars\n\n"
-        f"Баланс: {new_balance:.2f}⭐"
+        f"Баланс: {fmt_stars(new_balance)}⭐"
     )
 
 
@@ -320,7 +320,7 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
         f"Сумма: {amount:g}⭐\n"
         f"Способ: TON\n"
         f"Кошелёк: {details}\n\n"
-        f"Баланс: {new_balance:.2f}⭐"
+        f"Баланс: {fmt_stars(new_balance)}⭐"
     )
 
 
@@ -369,7 +369,7 @@ async def withdraw_new(callback: CallbackQuery, state: FSMContext, db):
 
     await callback.message.edit_text(
         "➕ Создать заявку на вывод\n\n"
-        f"Доступно: {balance:.2f}⭐\n"
+        f"Доступно: {fmt_stars(balance)}⭐\n"
         f"Минимум: {MIN_WITHDRAW:g}⭐\n\n"
         "Выбери способ вывода:",
         reply_markup=withdraw_method_kb()

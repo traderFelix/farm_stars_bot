@@ -1,4 +1,5 @@
 import asyncio
+
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -8,18 +9,6 @@ from handlers import user_router, admin_router
 from middlewares.db import DbMiddleware
 
 
-async def on_startup(bot, dispatcher):
-    db = await open_db()
-    await init_db(db)
-    dispatcher.update.middleware(DbMiddleware(db))
-
-
-async def on_shutdown(bot: Bot, dispatcher: Dispatcher):
-    db = dispatcher.get("db")
-    if db:
-        await close_db(db)
-
-
 async def main():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN не задан.")
@@ -27,13 +16,20 @@ async def main():
     bot = Bot(token=TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
-    dp.include_router(user_router)
-    dp.include_router(admin_router)
+    db = await open_db()
 
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
+    try:
+        await init_db(db)
 
-    await dp.start_polling(bot)
+        dp.update.middleware(DbMiddleware(db))
+
+        dp.include_router(user_router)
+        dp.include_router(admin_router)
+
+        await dp.start_polling(bot)
+
+    finally:
+        await close_db(db)
 
 
 if __name__ == "__main__":

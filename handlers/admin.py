@@ -17,7 +17,7 @@ from config import ADMIN_IDS
 from handlers.user import menu_text, is_admin
 
 from db import (
-    tx,
+    tx, fmt_stars,
 
     # campaigns
     upsert_campaign, set_campaign_status, delete_campaign, list_campaigns, list_campaigns_latest, get_campaign,
@@ -515,7 +515,7 @@ async def adm_user_balance_show(message: Message, state: FSMContext, db):
 
     await message.answer(
         f"👤 User ID: {user_id}\n"
-        f"⭐ Баланс: {balance:.2f}\n\n"
+        f"⭐ Баланс: {fmt_stars(balance)}\n\n"
         f"📜 Последние операции:\n" + "\n".join(lines),
         reply_markup=admin_user_kb(user_id)
     )
@@ -580,7 +580,7 @@ async def adm_user_adjust_finish(message: Message, state: FSMContext, db):
     await message.answer(
         f"✅ Готово\n"
         f"Изменение: {delta:+.2f}⭐\n"
-        f"Новый баланс: {balance:.2f}⭐",
+        f"Новый баланс: {fmt_stars(balance)}⭐",
         reply_markup=admin_user_kb(user_id)
     )
 

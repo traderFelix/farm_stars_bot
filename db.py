@@ -2,6 +2,7 @@ import aiosqlite
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
 from config import DB_PATH
+from decimal import Decimal, ROUND_DOWN
 
 
 # ---------- Connection / TX ----------
@@ -38,7 +39,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
       username TEXT,
       tg_first_name TEXT,
       tg_last_name TEXT,
-      balance REAL DEFAULT 0 CHECK(balance >= 0),
+      balance NUMERIC DEFAULT 0 CHECK(balance >= 0),
       is_banned INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       last_seen_at TEXT DEFAULT (datetime('now'))
@@ -47,7 +48,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE TABLE IF NOT EXISTS campaigns (
       campaign_key TEXT PRIMARY KEY,
       title TEXT NOT NULL,
-      reward_amount REAL NOT NULL,
+      reward_amount NUMERIC NOT NULL,
       status TEXT DEFAULT 'draft',             -- draft | active | ended
       description TEXT,
       created_at TEXT DEFAULT (datetime('now')),
@@ -58,7 +59,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE TABLE IF NOT EXISTS claims (
       user_id INTEGER NOT NULL,
       campaign_key TEXT NOT NULL,
-      amount REAL NOT NULL,
+      amount NUMERIC NOT NULL,
       claimed_at TEXT DEFAULT (datetime('now')),
       status TEXT DEFAULT 'ok',
       PRIMARY KEY (user_id, campaign_key),
@@ -79,7 +80,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE TABLE IF NOT EXISTS ledger (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
-      delta REAL NOT NULL,
+      delta NUMERIC NOT NULL,
       reason TEXT NOT NULL,
       campaign_key TEXT,
       withdrawal_id INTEGER,
@@ -91,7 +92,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE TABLE IF NOT EXISTS withdrawals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
-      amount REAL NOT NULL,
+      amount NUMERIC NOT NULL,
       method TEXT NOT NULL,            -- 'ton' | 'stars'
       details TEXT,                    -- wallet address for TON
       status TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|rejected
@@ -721,3 +722,9 @@ async def apply_balance_debit_if_enough(
         (int(user_id), -amount, reason, campaign_key, withdrawal_id, meta),
     )
     return True
+
+def stars(value) -> Decimal:
+    return Decimal(value).quantize(Decimal("0.00"), rounding=ROUND_DOWN)
+
+def fmt_stars(v):
+    return f"{Decimal(v):.2f}"
