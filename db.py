@@ -56,8 +56,22 @@ def init_db():
       delta REAL NOT NULL,
       reason TEXT NOT NULL,
       campaign_key TEXT,
+      withdrawal_id INTEGER,
       meta TEXT,
       created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(user_id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS withdrawals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      method TEXT NOT NULL,            -- 'ton' | 'stars'
+      details TEXT,                    -- wallet address for TON
+      status TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|rejected
+      created_at TEXT DEFAULT (datetime('now')),
+      processed_at TEXT,
+      processed_by INTEGER,
       FOREIGN KEY (user_id) REFERENCES users(user_id)
     );
 
@@ -65,6 +79,9 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_users_last_seen_at ON users(last_seen_at);
     CREATE INDEX IF NOT EXISTS idx_claims_campaign_key ON claims(campaign_key);
     CREATE INDEX IF NOT EXISTS idx_winners_campaign_key ON campaign_winners(campaign_key);
+    CREATE INDEX IF NOT EXISTS idx_ledger_withdrawal ON ledger(withdrawal_id);
+    CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
     """)
 
     conn.commit()
@@ -468,13 +485,20 @@ def users_growth_by_day(days: int = 30):
     )
     return [(row[0], int(row[1])) for row in cursor.fetchall()]
 
-def ledger_add(user_id: int, delta: float, reason: str, campaign_key: Optional[str] = None, meta: Optional[str] = None):
+def ledger_add(
+        user_id: int,
+        delta: float,
+        reason: str,
+        campaign_key: Optional[str] = None,
+        withdrawal_id: Optional[int] = None,
+        meta: Optional[str] = None,
+):
     cursor.execute(
         """
-        INSERT INTO ledger (user_id, delta, reason, campaign_key, meta, created_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO ledger (user_id, delta, reason, campaign_key, withdrawal_id, meta, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         """,
-        (int(user_id), float(delta), reason, campaign_key, meta),
+        (int(user_id), float(delta), reason, campaign_key, withdrawal_id, meta),
     )
 
 
@@ -506,5 +530,89 @@ def ledger_user_history(user_id: int, limit: int = 20):
         LIMIT ?
         """,
         (int(user_id), int(limit)),
+    )
+    return cursor.fetchall()
+
+def create_withdrawal(user_id: int, amount: float, method: str, details: Optional[str] = None) -> int:
+    cursor.execute(
+        """
+        INSERT INTO withdrawals (user_id, amount, method, details, status)
+        VALUES (?, ?, ?, ?, 'pending')
+        """,
+        (int(user_id), float(amount), method, details),
+    )
+    return int(cursor.lastrowid)
+
+
+def list_withdrawals(status: str = "pending", limit: int = 20):
+    cursor.execute(
+        """
+        SELECT w.id, w.user_id, u.username, w.amount, w.method, w.details, w.status, w.created_at
+        FROM withdrawals w
+        LEFT JOIN users u ON u.user_id = w.user_id
+        WHERE w.status = ?
+        ORDER BY datetime(w.created_at) DESC
+        LIMIT ?
+        """,
+        (status, int(limit)),
+    )
+    return cursor.fetchall()
+
+
+def get_withdrawal(withdrawal_id: int):
+    cursor.execute(
+        """
+        SELECT w.id, w.user_id, u.username, w.amount, w.method, w.details, w.status, w.created_at
+        FROM withdrawals w
+        LEFT JOIN users u ON u.user_id = w.user_id
+        WHERE w.id = ?
+        """,
+        (int(withdrawal_id),),
+    )
+    return cursor.fetchone()
+
+
+def set_withdrawal_status(withdrawal_id: int, status: str, processed_by: Optional[int] = None):
+    cursor.execute(
+        """
+        UPDATE withdrawals
+        SET status = ?,
+            processed_at = datetime('now'),
+            processed_by = ?
+        WHERE id = ?
+        """,
+        (status, processed_by, int(withdrawal_id)),
+    )
+
+def user_withdrawals(user_id: int, limit: int = 20):
+    cursor.execute(
+        """
+        SELECT id, amount, method, status, created_at
+        FROM withdrawals
+        WHERE user_id = ?
+        ORDER BY datetime(created_at) DESC
+        LIMIT ?
+        """,
+        (int(user_id), int(limit)),
+    )
+    return cursor.fetchall()
+
+def balances_audit(limit: int = 10):
+    cursor.execute(
+        """
+        SELECT
+          u.user_id,
+          u.username,
+          COALESCE(u.balance, 0) AS users_balance,
+          COALESCE(SUM(l.delta), 0) AS ledger_sum,
+          (COALESCE(u.balance, 0) - COALESCE(SUM(l.delta), 0)) AS diff
+        FROM users u
+        LEFT JOIN ledger l ON l.user_id = u.user_id
+        GROUP BY u.user_id
+        HAVING ABS(diff) > 1e-9
+        ORDER BY ABS(diff) DESC
+        LIMIT ?
+        """,
+        (int(limit),),
     )
     return cursor.fetchall()

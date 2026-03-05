@@ -32,9 +32,16 @@ from db import (
     users_growth_by_day,
 
     # ledger
-    ledger_add, ledger_user_history, add_balance, get_balance,
+    ledger_add, ledger_user_history, add_balance, get_balance, balances_audit,
+
+    # withdraw
+    list_withdrawals, get_withdrawal, set_withdrawal_status,
 )
-from keyboards import main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, campaign_created_kb, admin_user_kb
+
+from keyboards import (
+    main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb,
+    campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb
+)
 
 from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust
 
@@ -527,4 +534,192 @@ async def adm_user_adjust_finish(message: Message, state: FSMContext):
         f"Изменение: {delta:+.2f}⭐\n"
         f"Новый баланс: {balance:.2f}⭐",
         reply_markup=admin_user_kb(user_id)
+    )
+
+@router.callback_query(F.data == "adm:wd:list")
+async def adm_withdraw_list(callback: CallbackQuery):
+    await callback.answer()
+    rows = list_withdrawals(status="pending", limit=20)
+
+    if not rows:
+        await callback.answer("✅ Нет заявок на вывод", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "💸 Заявки на вывод (pending):",
+        reply_markup=admin_withdraw_list_kb(rows)
+    )
+
+@router.callback_query(F.data.startswith("adm:wd:open:"))
+async def adm_withdraw_open(callback: CallbackQuery):
+    await callback.answer()
+    wid = int(callback.data.split(":")[3])
+
+    row = get_withdrawal(wid)
+    if not row:
+        await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+
+    _id, user_id, username, amount, method, details, status, created_at = row
+    name = f"@{username}" if username else f"id:{user_id}"
+    det = details or "—"
+
+    await callback.message.edit_text(
+        f"💸 Заявка #{_id}\n\n"
+        f"👤 {name}\n"
+        f"⭐ Сумма: {float(amount):g}\n"
+        f"🔧 Метод: {method}\n"
+        f"🧾 Детали: {det}\n"
+        f"📌 Статус: {status}\n"
+        f"🕒 Создано: {created_at}",
+        reply_markup=admin_withdraw_actions_kb(_id)
+    )
+
+@router.callback_query(F.data.startswith("adm:wd:paid:"))
+async def adm_withdraw_paid(callback: CallbackQuery):
+    await callback.answer()
+    wid = int(callback.data.split(":")[3])
+    admin_id = callback.from_user.id
+
+    row = get_withdrawal(wid)
+    if not row:
+        await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+    _id, user_id, username, amount, method, details, status, created_at = row
+    if status != "pending":
+        await callback.answer("⚠️ Уже обработана", show_alert=True)
+        return
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        row = get_withdrawal(wid)
+        if not row:
+            conn.rollback()
+            await callback.answer("❌ Заявка не найдена", show_alert=True)
+            return
+
+        _id, user_id, username, amount, method, details, status, created_at = row
+        if status != "pending":
+            conn.rollback()
+            await callback.answer("⚠️ Уже обработана", show_alert=True)
+            return
+
+        set_withdrawal_status(wid, "paid", admin_id)
+
+        ledger_add(
+            user_id=user_id,
+            delta=0.0,
+            reason="withdraw_paid",
+            withdrawal_id=wid,
+            meta=f"method={method}",
+        )
+
+        conn.commit()
+
+        try:
+            await callback.bot.send_message(
+                user_id,
+                f"✅ Твоя заявка на вывод #{wid} выплачена.\n"
+                f"Сумма: {float(amount):g}⭐\n"
+                f"Метод: {method.upper()}"
+            )
+        except Exception:
+            pass  # юзер мог заблокировать бота / закрыть ЛС
+
+    except Exception as e:
+        conn.rollback()
+        await callback.answer(f"❌ Ошибка: {type(e).__name__}: {e}", show_alert=True)
+        return
+
+    await callback.answer("✅ Отмечено как выплачено", show_alert=True)
+    await adm_withdraw_open(callback)
+
+@router.callback_query(F.data.startswith("adm:wd:reject:"))
+async def adm_withdraw_reject(callback: CallbackQuery):
+    await callback.answer()
+    wid = int(callback.data.split(":")[3])
+    admin_id = callback.from_user.id
+
+    row = get_withdrawal(wid)
+    if not row:
+        await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+    _id, user_id, username, amount, method, details, status, created_at = row
+    if status != "pending":
+        await callback.answer("⚠️ Уже обработана", show_alert=True)
+        return
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        row = get_withdrawal(wid)
+        if not row:
+            conn.rollback()
+            await callback.answer("❌ Заявка не найдена", show_alert=True)
+            return
+
+        _id, user_id, username, amount, method, details, status, created_at = row
+        if status != "pending":
+            conn.rollback()
+            await callback.answer("⚠️ Уже обработана", show_alert=True)
+            return
+
+        set_withdrawal_status(wid, "rejected", admin_id)
+
+        add_balance(user_id, float(amount))
+        ledger_add(
+            user_id=user_id,
+            delta=float(amount),
+            reason="withdraw_release",
+            withdrawal_id=wid,
+            meta="rejected",
+        )
+
+        conn.commit()
+
+        try:
+            await callback.bot.send_message(
+                user_id,
+                f"❌ Твоя заявка на вывод #{wid} отклонена.\n"
+                f"Сумма: {float(amount):g}⭐ возвращена на баланс."
+            )
+        except Exception:
+            pass
+
+    except Exception as e:
+        conn.rollback()
+        await callback.answer(f"❌ Ошибка: {type(e).__name__}: {e}", show_alert=True)
+        return
+
+    await callback.answer("✅ Отклонено и возвращено на баланс", show_alert=True)
+    await adm_withdraw_open(callback)
+
+@router.callback_query(F.data == "adm:audit")
+async def adm_audit_balances(callback: CallbackQuery):
+    await callback.answer()
+
+    rows = balances_audit(limit=10)
+
+    if not rows:
+        await callback.message.edit_text(
+            "🧮 Сверка балансов\n\n✅ Расхождений не найдено.",
+            reply_markup=admin_back_kb()
+        )
+        return
+
+    lines = []
+    for user_id, username, users_balance, ledger_sum, diff in rows:
+        name = f"@{username}" if username else f"id:{user_id}"
+        lines.append(
+            f"{name}\n"
+            f"users.balance: {float(users_balance):.2f}⭐\n"
+            f"ledger SUM:   {float(ledger_sum):.2f}⭐\n"
+            f"diff:         {float(diff):+.2f}⭐\n"
+        )
+
+    await callback.message.edit_text(
+        "🧮 Сверка балансов\n\n"
+        "Найдены расхождения (топ-10 по модулю):\n\n" + "\n".join(lines),
+        reply_markup=admin_back_kb()
     )
