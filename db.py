@@ -103,11 +103,13 @@ async def init_db(db: aiosqlite.Connection) -> None:
 
     CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
     CREATE INDEX IF NOT EXISTS idx_users_last_seen_at ON users(last_seen_at);
+    CREATE INDEX IF NOT EXISTS idx_campaigns_status_created ON campaigns(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_claims_campaign_key ON claims(campaign_key);
     CREATE INDEX IF NOT EXISTS idx_winners_campaign_key ON campaign_winners(campaign_key);
+    CREATE INDEX IF NOT EXISTS idx_ledger_user_created ON ledger(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_ledger_withdrawal ON ledger(withdrawal_id);
-    CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
     """)
     await db.commit()
 
@@ -415,6 +417,49 @@ async def global_claims_stats(db: aiosqlite.Connection):
         row = await cur.fetchone()
     return int(row["cnt"] or 0), float(row["total"] or 0.0)
 
+async def claim_reward(
+        db: aiosqlite.Connection,
+        user_id: int,
+        username: Optional[str],
+        campaign_key: str,
+) -> tuple[bool, str, float]:
+
+    uid = int(user_id)
+    ck = (campaign_key or "").strip()
+
+    async with tx(db):
+        row = await get_campaign(db, ck)
+        if not row:
+            return False, "❌ Конкурс не найден", 0.0
+
+        _k, title, reward_amount, status = row[0], row[1], float(row[2]), row[3]
+        if status != "active":
+            return False, "❌ Этот конкурс сейчас неактивен", 0.0
+
+        if username:
+            await attach_winner_user_id(db, ck, username, uid)
+
+        ok_winner = await is_winner(db, ck, uid, username)
+        if not ok_winner:
+            return False, "❌ Ты не в списке победителей этого конкурса", 0.0
+
+        try:
+            await add_claim(db, uid, ck, reward_amount)
+        except Exception:
+            return False, "⚠️ Ты уже забрал награду в этом конкурсе", 0.0
+
+        await apply_balance_delta(
+            db,
+            user_id=uid,
+            delta=reward_amount,
+            reason="claim",
+            campaign_key=ck,
+            meta=title,
+        )
+
+        new_balance = await get_balance(db, uid)
+
+    return True, f"✅ Ты получил {reward_amount:g}⭐️ ({title})", float(new_balance)
 
 # ---------- Totals for admin dashboard ----------
 

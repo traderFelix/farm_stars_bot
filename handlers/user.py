@@ -7,8 +7,8 @@ from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW
 
 from db import (
     tx,
-    register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough, apply_balance_delta,
-    is_winner, attach_winner_user_id, has_claim, add_claim, list_active_campaigns, get_campaign
+    register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough,
+    claim_reward, list_active_campaigns
 )
 
 from keyboards import (
@@ -122,67 +122,26 @@ async def claim_menu(callback: CallbackQuery, db):
 @router.callback_query(F.data.startswith("claim:"))
 async def claim_for_campaign(callback: CallbackQuery, db):
     user_id = callback.from_user.id
-    username = callback.from_user.username  # может быть None
+    username = callback.from_user.username
     campaign_key = callback.data.split(":", 1)[1]
 
-    async with tx(db, immediate=False):
-        await register_user(
-            db,
-            user_id,
-            username,
-            callback.from_user.first_name,
-            callback.from_user.last_name
-        )
-
-    campaign = await get_campaign(db, campaign_key)
-    if not campaign:
-        await callback.answer("❌ Конкурс не найден", show_alert=True)
-        return
-
-    _key, title, reward_amount, status = campaign[0], campaign[1], campaign[2], campaign[3]
-
-    if status != "active":
-        await callback.answer("❌ Этот конкурс сейчас неактивен", show_alert=True)
-        return
-
-    if username:
-        async with tx(db, immediate=False):
-            await attach_winner_user_id(db, campaign_key, username, user_id)
-
-    if not await is_winner(db, campaign_key, user_id, username):
-        await callback.answer("❌ Ты не в списке победителей этого конкурса", show_alert=True)
-        return
-
-    if await has_claim(db, user_id, campaign_key):
-        await callback.answer("⚠️ Ты уже забрал награду в этом конкурсе", show_alert=True)
-        return
-
-    try:
-        amount = float(reward_amount)
-
-        async with tx(db):
-            await add_claim(db, user_id, campaign_key, amount)
-
-            await apply_balance_delta(
-                db,
-                user_id=user_id,
-                delta=amount,
-                reason="claim",
-                campaign_key=campaign_key,
-                meta=title,
-            )
-
-    except Exception:
-        await callback.answer("❌ Ошибка клейма, попробуй ещё раз", show_alert=True)
-        return
-
-    balance = await get_balance(db, user_id)
-    await callback.message.edit_text(
-        f"✅ Ты получил {float(reward_amount):g}⭐️ ({title})\n\n"
-        f"Баланс: {balance:.2f}⭐️",
-        reply_markup=main_menu(is_admin(user_id)),
+    await register_user(
+        db,
+        user_id,
+        username,
+        callback.from_user.first_name,
+        callback.from_user.last_name
     )
 
+    ok, msg, new_balance = await claim_reward(db, user_id, username, campaign_key)
+    if not ok:
+        await callback.answer(msg, show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"{msg}\n\nБаланс: {new_balance:.2f}⭐️",
+        reply_markup=main_menu(is_admin(user_id)),
+    )
 
 @router.callback_query(F.data == "withdraw")
 async def withdraw_menu(callback: CallbackQuery, state: FSMContext, db):
