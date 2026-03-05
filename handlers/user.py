@@ -7,10 +7,8 @@ from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW
 
 from db import (
     tx,
-    register_user, get_balance, create_withdrawal, user_withdrawals,
-    is_winner, attach_winner_user_id,
-    has_claim, add_balance, add_claim,
-    list_active_campaigns, get_campaign, ledger_add
+    register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough, apply_balance_delta,
+    is_winner, attach_winner_user_id, has_claim, add_claim, list_active_campaigns, get_campaign
 )
 
 from keyboards import (
@@ -163,10 +161,9 @@ async def claim_for_campaign(callback: CallbackQuery, db):
         amount = float(reward_amount)
 
         async with tx(db):
-            await add_balance(db, user_id, amount)
             await add_claim(db, user_id, campaign_key, amount)
 
-            await ledger_add(
+            await apply_balance_delta(
                 db,
                 user_id=user_id,
                 delta=amount,
@@ -251,19 +248,19 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
         await message.answer("Введи TON-адрес кошелька для выплаты:")
         return
 
-    # method == "stars"
     try:
         async with tx(db):
             wid = await create_withdrawal(db, user_id, amount, method="stars", details=None)
-            await add_balance(db, user_id, -amount)
-            await ledger_add(
+            ok = await apply_balance_debit_if_enough(
                 db,
                 user_id=user_id,
-                delta=-amount,
+                amount=amount,
                 reason="withdraw_hold",
                 withdrawal_id=wid,
-                meta=f"method={method}",
+                meta="method=stars",
             )
+            if not ok:
+                raise ValueError("insufficient_balance")
 
         username = message.from_user.username
         name = f"@{username}" if username else f"id:{user_id}"
@@ -284,6 +281,9 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
                 pass
 
     except Exception as e:
+        if isinstance(e, ValueError) and str(e) == "insufficient_balance":
+            await message.answer("❌ Недостаточно звёзд на балансе")
+            return
         await message.answer(f"❌ Ошибка создания заявки: {type(e).__name__}: {e}")
         return
 
@@ -313,15 +313,16 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
     try:
         async with tx(db):
             wid = await create_withdrawal(db, user_id, amount, method, details=details)
-            await add_balance(db, user_id, -amount)
-            await ledger_add(
+            ok = await apply_balance_debit_if_enough(
                 db,
                 user_id=user_id,
-                delta=-amount,
+                amount=amount,
                 reason="withdraw_hold",
                 withdrawal_id=wid,
-                meta=f"method={method}",
+                meta="method=ton",
             )
+            if not ok:
+                raise ValueError("insufficient_balance")
 
         username = message.from_user.username
         name = f"@{username}" if username else f"id:{user_id}"
@@ -346,6 +347,9 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
                 pass
 
     except Exception as e:
+        if isinstance(e, ValueError) and str(e) == "insufficient_balance":
+            await message.answer("❌ Недостаточно звёзд на балансе")
+            return
         await message.answer(f"❌ Ошибка создания заявки: {type(e).__name__}: {e}")
         return
 

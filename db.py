@@ -1,5 +1,5 @@
 import aiosqlite
-from typing import Optional, List, Tuple, Any
+from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
 from config import DB_PATH
 
@@ -38,7 +38,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
       username TEXT,
       tg_first_name TEXT,
       tg_last_name TEXT,
-      balance REAL DEFAULT 0,
+      balance REAL DEFAULT 0 CHECK(balance >= 0),
       is_banned INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       last_seen_at TEXT DEFAULT (datetime('now'))
@@ -154,12 +154,6 @@ async def get_balance(db: aiosqlite.Connection, user_id: int) -> float:
     async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cur:
         row = await cur.fetchone()
     return float(row["balance"]) if row else 0.0
-
-async def add_balance(db: aiosqlite.Connection, user_id: int, amount: float) -> None:
-    await db.execute(
-        "UPDATE users SET balance = balance + ? WHERE user_id = ?",
-        (float(amount), int(user_id)),
-    )
 
 async def total_balances(db: aiosqlite.Connection) -> float:
     async with db.execute("SELECT COALESCE(SUM(balance), 0) AS s FROM users") as cur:
@@ -633,3 +627,52 @@ async def balances_audit(db: aiosqlite.Connection, limit: int = 10):
             (int(limit),),
     ) as cur:
         return await cur.fetchall()
+
+async def apply_balance_delta(
+        db: aiosqlite.Connection,
+        user_id: int,
+        delta: float,
+        reason: str,
+        campaign_key: Optional[str] = None,
+        withdrawal_id: Optional[int] = None,
+        meta: Optional[str] = None,
+) -> None:
+    await db.execute(
+        """
+        INSERT INTO ledger (user_id, delta, reason, campaign_key, withdrawal_id, meta, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (int(user_id), float(delta), reason, campaign_key, withdrawal_id, meta),
+    )
+
+    await db.execute(
+        "UPDATE users SET balance = balance + ? WHERE user_id = ?",
+        (float(delta), int(user_id)),
+    )
+
+async def apply_balance_debit_if_enough(
+        db: aiosqlite.Connection,
+        user_id: int,
+        amount: float,
+        reason: str,
+        campaign_key: Optional[str] = None,
+        withdrawal_id: Optional[int] = None,
+        meta: Optional[str] = None,
+) -> bool:
+    amount = float(amount)
+
+    cur = await db.execute(
+        "UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?",
+        (amount, int(user_id), amount),
+    )
+    if cur.rowcount != 1:
+        return False
+
+    await db.execute(
+        """
+        INSERT INTO ledger (user_id, delta, reason, campaign_key, withdrawal_id, meta, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (int(user_id), -amount, reason, campaign_key, withdrawal_id, meta),
+    )
+    return True

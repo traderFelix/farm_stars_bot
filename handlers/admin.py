@@ -32,7 +32,7 @@ from db import (
     users_growth_by_day,
 
     # ledger
-    ledger_add, ledger_user_history, add_balance, get_balance, balances_audit,
+    ledger_add, ledger_user_history, apply_balance_delta, get_balance, balances_audit,
 
     # withdraw
     list_withdrawals, get_withdrawal, set_withdrawal_status,
@@ -563,13 +563,11 @@ async def adm_user_adjust_finish(message: Message, state: FSMContext, db):
 
     try:
         async with tx(db):
-            await add_balance(db, user_id, delta)
-            await ledger_add(
+            await apply_balance_delta(
                 db,
                 user_id=user_id,
                 delta=delta,
                 reason="admin_adjust",
-                campaign_key=None,
                 meta=f"mode={mode}",
             )
     except Exception:
@@ -655,7 +653,6 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
 
     try:
         async with tx(db):
-            # повторно проверяем внутри транзакции
             row2 = await get_withdrawal(db, wid)
             if not row2:
                 await callback.answer("❌ Заявка не найдена", show_alert=True)
@@ -729,19 +726,18 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
 
             await set_withdrawal_status(db, wid, "rejected", admin_id)
 
-            await add_balance(db, user_id, float(amount))
-            await ledger_add(
+            await apply_balance_delta(
                 db,
-                user_id=user_id,
+                user_id=int(user_id),
                 delta=float(amount),
                 reason="withdraw_release",
-                withdrawal_id=wid,
+                withdrawal_id=int(wid),
                 meta="rejected",
             )
 
         try:
             await callback.bot.send_message(
-                user_id,
+                int(user_id),
                 f"❌ Твоя заявка на вывод #{wid} отклонена.\n"
                 f"Сумма: {float(amount):g}⭐ возвращена на баланс."
             )
