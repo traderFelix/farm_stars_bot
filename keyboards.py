@@ -15,11 +15,30 @@ def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="🎁 Забрать награду", callback_data="claim")],
         [InlineKeyboardButton(text="📋 Задания", callback_data="tasks")],
+        [InlineKeyboardButton(text="💸 Вывод", callback_data="withdraw")],
     ]
     if is_admin:
         rows.append([InlineKeyboardButton(text="🛠 Админка", callback_data="adm:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+def withdraw_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Создать заявку", callback_data="withdraw:new")],
+        [InlineKeyboardButton(text="📜 Мои заявки", callback_data="withdraw:my")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="back")],
+    ])
+
+def withdraw_back_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="withdraw")],
+    ])
+
+def withdraw_method_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 TON", callback_data="withdraw:method:ton")],
+        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="withdraw:method:stars")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="back")],
+    ])
 
 def tasks_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -35,14 +54,35 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📋 Все конкурсы", callback_data="adm:list")],
             [InlineKeyboardButton(text="➕ Создать конкурс", callback_data="adm:new")],
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="adm:stats_menu")],
+            [InlineKeyboardButton(text="📊 Статистика конкурсов", callback_data="adm:stats_menu")],
             [InlineKeyboardButton(text="📈 Рост пользователей", callback_data="adm:growth_png")],
             [InlineKeyboardButton(text="📜 Леджер (последние)", callback_data="adm:ledger_last")],
             [InlineKeyboardButton(text="🔎 Баланс пользователя", callback_data="adm:user_balance")],
             [InlineKeyboardButton(text="🏆 Топ по балансу", callback_data="adm:top")],
+            [InlineKeyboardButton(text="💸 Заявки на вывод", callback_data="adm:wd:list")],
+            [InlineKeyboardButton(text="🧮 Сверка балансов", callback_data="adm:audit")],
             [InlineKeyboardButton(text="⛔ Закрыть", callback_data="adm:close")],
         ]
     )
+
+def admin_withdraw_list_kb(rows):
+    kb = []
+    for wid, user_id, username, amount, method, details, status, created_at in rows:
+        name = f"@{username}" if username else f"id:{user_id}"
+        kb.append([InlineKeyboardButton(
+            text=f"#{wid} {name} — {float(amount):g}⭐ ({method})",
+            callback_data=f"adm:wd:open:{wid}"
+        )])
+    kb.append([InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def admin_withdraw_actions_kb(withdrawal_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Выплатил", callback_data=f"adm:wd:paid:{withdrawal_id}")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm:wd:reject:{withdrawal_id}")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:wd:list")],
+    ])
 
 def admin_user_kb(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

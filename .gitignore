@@ -21,9 +21,11 @@ venv/
 
 # Local data
 bot.db
-*.sqlite
-*.sqlite3
+bot.db-shm
+bot.db-wal
 
 # Secrets/env
 .env
 .env.*
+
+*.diff

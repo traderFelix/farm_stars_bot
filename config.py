@@ -6,3 +6,6 @@ CHANNEL_ID = os.getenv("CHANNEL_ID", "")
 ADMIN_IDS = set(map(int, os.getenv("ADMIN_IDS", "").split(",")))\
     if os.getenv("ADMIN_IDS")\
     else set()
+
+MIN_WITHDRAW = 100.0
+DB_PATH = "bot.db"

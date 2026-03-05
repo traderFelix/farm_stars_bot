@@ -17,7 +17,7 @@ from config import ADMIN_IDS
 from handlers.user import menu_text, is_admin
 
 from db import (
-    cursor, conn,
+    tx, fmt_stars,
 
     # campaigns
     upsert_campaign, set_campaign_status, delete_campaign, list_campaigns, list_campaigns_latest, get_campaign,
@@ -32,29 +32,39 @@ from db import (
     users_growth_by_day,
 
     # ledger
-    ledger_add, ledger_user_history, add_balance, get_balance,
+    ledger_add, ledger_user_history, apply_balance_delta, get_balance, balances_audit,
+
+    # withdraw
+    list_withdrawals, get_withdrawal, set_withdrawal_status,
 )
-from keyboards import main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, campaign_created_kb, admin_user_kb
+
+from keyboards import (
+    main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb,
+    campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb
+)
 
 from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust
 
 router = Router()
+
 
 class AdminOnly(Filter):
     async def __call__(self, event: TelegramObject) -> bool:
         user = getattr(event, "from_user", None)
         return bool(user and user.id in ADMIN_IDS)
 
+
 router.message.filter(AdminOnly())
 router.callback_query.filter(AdminOnly())
 
-async def _render_campaign_card(callback: CallbackQuery, key: str):
-    row = get_campaign(key)
+
+async def _render_campaign_card(callback: CallbackQuery, key: str, db):
+    row = await get_campaign(db, key)
     if not row:
         await callback.message.edit_text("❌ Конкурс не найден.", reply_markup=admin_back_kb())
         return
-    
-    _k, title, amount, status = row
+
+    _k, title, amount, status = row[0], row[1], row[2], row[3]
 
     if status == "active":
         status_text = "🟢 Активен"
@@ -73,31 +83,37 @@ async def _render_campaign_card(callback: CallbackQuery, key: str):
         reply_markup=campaign_manage_kb(key, status),
     )
 
+
 @router.callback_query(F.data == "adm:back")
 async def adm_back(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_text("🛠 Админ-панель", reply_markup=admin_menu_kb())
 
+
 @router.callback_query(F.data == "adm:close")
-async def adm_close(callback: CallbackQuery):
+async def adm_close(callback: CallbackQuery, db):
     await callback.answer()
 
     user_id = callback.from_user.id
-    balance = get_balance(user_id)
+    balance = await get_balance(db, user_id)
 
     await callback.message.edit_text(
         menu_text(balance),
         reply_markup=main_menu(is_admin(user_id))
     )
 
+
 @router.callback_query(F.data == "adm:list")
-async def adm_list(callback: CallbackQuery):
+async def adm_list(callback: CallbackQuery, db):
     await callback.answer()
-    rows = list_campaigns()
+
+    rows = await list_campaigns(db)
     if not rows:
         await callback.message.edit_text("Пока нет конкурсов.", reply_markup=admin_back_kb())
         return
+
     await callback.message.edit_text("📋 Список всех конкурсов:", reply_markup=campaigns_list_kb(rows))
+
 
 @router.callback_query(F.data.startswith("adm:open:"))
 async def adm_open(callback: CallbackQuery):
@@ -105,26 +121,39 @@ async def adm_open(callback: CallbackQuery):
     key = callback.data.split(":", 2)[2]
     await _render_campaign_card(callback, key)
 
+
 @router.callback_query(F.data.startswith("adm:on:"))
-async def adm_on(callback: CallbackQuery):
+async def adm_on(callback: CallbackQuery, db):
     await callback.answer()
+
     key = callback.data.split(":", 2)[2]
-    set_campaign_status(key, "active")
+    async with tx(db, immediate=False):
+        await set_campaign_status(db, key, "active")
+
     await _render_campaign_card(callback, key)
+
 
 @router.callback_query(F.data.startswith("adm:off:"))
-async def adm_off(callback: CallbackQuery):
+async def adm_off(callback: CallbackQuery, db):
     await callback.answer()
+
     key = callback.data.split(":", 2)[2]
-    set_campaign_status(key, "ended")
+    async with tx(db, immediate=False):
+        await set_campaign_status(db, key, "ended")
+
     await _render_campaign_card(callback, key)
 
+
 @router.callback_query(F.data.startswith("adm:del:"))
-async def adm_delete(callback: CallbackQuery):
+async def adm_delete(callback: CallbackQuery, db):
     await callback.answer()
+
     key = callback.data.split(":", 2)[2]
-    delete_campaign(key)
+    async with tx(db):
+        await delete_campaign(db, key)
+
     await adm_list(callback)
+
 
 @router.callback_query(F.data.startswith("adm:add_winners:"))
 async def add_winners_start(callback: CallbackQuery, state: FSMContext):
@@ -140,18 +169,24 @@ async def add_winners_start(callback: CallbackQuery, state: FSMContext):
         "@username2"
     )
 
+
 @router.message(AddWinners.usernames)
-async def save_winners_msg(message: Message, state: FSMContext):
+async def save_winners_msg(message: Message, state: FSMContext, db):
+
     data = await state.get_data()
     key = data.get("campaign_key")
     usernames = [
         line.strip().lstrip("@")
-        for line in message.text.splitlines()
+        for line in (message.text or "").splitlines()
         if line.strip()
     ]
-    count = add_winners(key, usernames)
+
+    async with tx(db):
+        count = await add_winners(db, key, usernames)
+
     await state.clear()
     await message.answer(f"✅ Добавлено {count} победителей к конкурсу {key}")
+
 
 @router.callback_query(F.data == "adm:new")
 async def adm_new(callback: CallbackQuery, state: FSMContext):
@@ -162,9 +197,10 @@ async def adm_new(callback: CallbackQuery, state: FSMContext):
         reply_markup=admin_back_kb(),
     )
 
+
 @router.message(CampaignCreate.key)
 async def adm_new_key(message: Message, state: FSMContext):
-    key = message.text.strip()
+    key = (message.text or "").strip()
     if " " in key or len(key) < 3:
         await message.answer("❌ KEY без пробелов, минимум 3 символа. Введи снова:")
         return
@@ -172,10 +208,11 @@ async def adm_new_key(message: Message, state: FSMContext):
     await state.set_state(CampaignCreate.amount)
     await message.answer("Теперь введи награду (число), например: 10")
 
+
 @router.message(CampaignCreate.amount)
 async def adm_new_amount(message: Message, state: FSMContext):
     try:
-        amount = float(message.text.strip().replace(",", "."))
+        amount = float((message.text or "").strip().replace(",", "."))
         if amount <= 0:
             raise ValueError
     except ValueError:
@@ -185,14 +222,17 @@ async def adm_new_amount(message: Message, state: FSMContext):
     await state.set_state(CampaignCreate.title)
     await message.answer("И последнее — введи название конкурса (title):")
 
+
 @router.message(CampaignCreate.title)
-async def adm_new_title(message: Message, state: FSMContext):
-    title = message.text.strip()
+async def adm_new_title(message: Message, state: FSMContext, db):
+    title = (message.text or "").strip()
     data = await state.get_data()
     key = data["key"]
     amount = data["amount"]
 
-    upsert_campaign(key, title, amount, "draft")
+    async with tx(db):
+        await upsert_campaign(db, key, title, amount, "draft")
+
     await state.clear()
 
     await message.answer(
@@ -204,20 +244,21 @@ async def adm_new_title(message: Message, state: FSMContext):
         reply_markup=campaign_created_kb(key)
     )
 
+
 @router.callback_query(F.data == "adm:stats_menu")
-async def adm_stats_menu(callback: CallbackQuery):
+async def adm_stats_menu(callback: CallbackQuery, db):
     await callback.answer()
 
-    rows = list_campaigns_latest(limit=5)
+    rows = await list_campaigns_latest(db, limit=5)
     if not rows:
         await callback.message.edit_text("Нет конкурсов", reply_markup=admin_back_kb())
         return
 
-    total_assigned_sum = total_assigned_amount()
-    claims_count_all, total_claimed_all = global_claims_stats()
-    total_balances_sum = total_balances()
-    active_cnt, ended_cnt, draft_cnt = campaigns_status_counts()
-    unclaimed_sum = unclaimed_total_amount()
+    total_assigned_sum = await total_assigned_amount(db)
+    claims_count_all, total_claimed_all = await global_claims_stats(db)
+    total_balances_sum = await total_balances(db)
+    active_cnt, ended_cnt, draft_cnt = await campaigns_status_counts(db)
+    unclaimed_sum = await unclaimed_total_amount(db)
 
     await callback.message.edit_text(
         "📊 Полная статистика:\n\n"
@@ -232,18 +273,20 @@ async def adm_stats_menu(callback: CallbackQuery):
         reply_markup=stats_list_kb(rows)
     )
 
+
 @router.callback_query(F.data.startswith("adm:stats:"))
-async def adm_stats(callback: CallbackQuery):
+async def adm_stats(callback: CallbackQuery, db):
     await callback.answer()
+
     key = callback.data.split(":")[2]
 
-    claims_count, winners_cnt, total_paid = campaign_stats(key)
-    claimed = claimed_usernames(key)
+    claims_count, winners_cnt, total_paid = await campaign_stats(db, key)
+    claimed = await claimed_usernames(db, key)
 
     if claimed:
         claimed_text = "\n".join([f"@{u}" for u in claimed[:50]])
         if len(claimed) > 50:
-            claimed_text += f"\n… и ещё {len(claimed)-50}"
+            claimed_text += f"\n… и ещё {len(claimed) - 50}"
     else:
         claimed_text = "—"
 
@@ -255,13 +298,15 @@ async def adm_stats(callback: CallbackQuery):
         reply_markup=admin_back_kb()
     )
 
+
 @router.callback_query(F.data.startswith("adm:show_winners:"))
-async def adm_show_winners(callback: CallbackQuery):
+async def adm_show_winners(callback: CallbackQuery, db):
     await callback.answer()
+
     key = callback.data.split(":")[2]
 
-    winners = list_winners(key)
-    claimed = set(claimed_usernames(key))  # кто заклеймил
+    winners = await list_winners(db, key)
+    claimed = set(await claimed_usernames(db, key))  # кто заклеймил
 
     if not winners:
         text = "Победителей нет"
@@ -270,7 +315,6 @@ async def adm_show_winners(callback: CallbackQuery):
         for i, u in enumerate(winners[:50], start=1):
             mark = " ✅" if u in claimed else ""
             lines.append(f"{i}. @{u}{mark}")
-
         text = "\n".join(lines)
 
     await callback.message.edit_text(
@@ -278,10 +322,12 @@ async def adm_show_winners(callback: CallbackQuery):
         reply_markup=admin_back_kb()
     )
 
+
 @router.callback_query(F.data == "adm:home")
 async def adm_home(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_text("🛠 Админ-панель", reply_markup=admin_menu_kb())
+
 
 @router.callback_query(F.data.startswith("adm:winner_del:"))
 async def winner_del_start(callback: CallbackQuery, state: FSMContext):
@@ -296,13 +342,16 @@ async def winner_del_start(callback: CallbackQuery, state: FSMContext):
         "Введи username:"
     )
 
+
 @router.message(DeleteWinner.username)
-async def winner_del_finish(message: Message, state: FSMContext):
+async def winner_del_finish(message: Message, state: FSMContext, db):
     data = await state.get_data()
     key = data["campaign_key"]
     username = (message.text or "").strip()
 
-    ok, msg = delete_winner_if_not_claimed(key, username)
+    async with tx(db):
+        ok, msg = await delete_winner_if_not_claimed(db, key, username)
+
     await state.clear()
 
     if ok:
@@ -310,38 +359,41 @@ async def winner_del_finish(message: Message, state: FSMContext):
     else:
         await message.answer(f"⚠️ {msg}")
 
+
 @router.callback_query(F.data == "adm:top")
-async def adm_top_balances(callback: CallbackQuery):
+async def adm_top_balances(callback: CallbackQuery, db):
     await callback.answer()
 
-    rows = top_users_by_balance(10)
+    rows = await top_users_by_balance(db, 10)
 
     if not rows:
         text = "🏆 Топ-10 по балансу:\n\nПока нет пользователей с балансом ⭐️"
     else:
         lines = []
-        for i, (username, balance) in enumerate(rows, start=1):
+        for i, r in enumerate(rows, start=1):
+            username, balance = r[0], r[1]
             name = f"@{username}" if username else "(без username)"
             lines.append(f"{i}. {name} — {float(balance):.2f}⭐️")
         text = "🏆 Топ-10 по балансу:\n\n" + "\n".join(lines)
 
     await callback.message.edit_text(text, reply_markup=admin_back_kb())
 
+
 @router.callback_query(F.data == "adm:growth_png")
-async def adm_growth_png(callback: CallbackQuery):
+async def adm_growth_png(callback: CallbackQuery, db):
     await callback.answer()
 
     days = 30
-    total = users_total_count()
-    new_1d = users_new_since_hours(24)
-    new_7d = users_new_since_days(7)
-    new_30d = users_new_since_days(30)
+    total = await users_total_count(db)
+    new_1d = await users_new_since_hours(db, 24)
+    new_7d = await users_new_since_days(db, 7)
+    new_30d = await users_new_since_days(db, 30)
 
-    active_1d = users_active_since_days(1)
-    active_7d = users_active_since_days(7)
-    active_30d = users_active_since_days(30)
+    active_1d = await users_active_since_days(db, 1)
+    active_7d = await users_active_since_days(db, 7)
+    active_30d = await users_active_since_days(db, 30)
 
-    points = users_growth_by_day(days)
+    points = await users_growth_by_day(db, days)
 
     fig = plt.figure()
     ax = fig.add_subplot(111)
@@ -357,7 +409,7 @@ async def adm_growth_png(callback: CallbackQuery):
         ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
 
         ax.set_ylim(bottom=0)
-        ax.set_xticks(xs[::max(1, len(xs)//15)])
+        ax.set_xticks(xs[::max(1, len(xs) // 15)])
         ax.set_xlabel("Date")
         ax.set_ylabel("New users")
         ax.set_title(f"User growth (last {days} days)")
@@ -394,25 +446,29 @@ async def adm_growth_png(callback: CallbackQuery):
         reply_markup=admin_back_kb()
     )
 
+
 @router.callback_query(F.data == "adm:ledger_last")
-async def adm_ledger_last(callback: CallbackQuery):
+async def adm_ledger_last(callback: CallbackQuery, db):
     await callback.answer()
 
-    cursor.execute("""
+    async with db.execute(
+            """
         SELECT l.created_at, u.username, l.delta, l.reason, l.campaign_key
         FROM ledger l
         LEFT JOIN users u ON u.user_id = l.user_id
         ORDER BY datetime(l.created_at) DESC
         LIMIT 30
-    """)
-    rows = cursor.fetchall()
+        """
+    ) as cur:
+        rows = await cur.fetchall()
 
     if not rows:
         await callback.message.edit_text("📜 Леджер пуст.", reply_markup=admin_back_kb())
         return
 
     lines = []
-    for created_at, username, delta, reason, campaign_key in rows:
+    for r in rows:
+        created_at, username, delta, reason, campaign_key = r[0], r[1], r[2], r[3], r[4]
         name = f"@{username}" if username else "(no-username)"
         ck = f" [{campaign_key}]" if campaign_key else ""
         lines.append(f"{created_at} — {name}: {float(delta):g}⭐ — {reason}{ck}")
@@ -422,36 +478,35 @@ async def adm_ledger_last(callback: CallbackQuery):
         reply_markup=admin_back_kb()
     )
 
+
 @router.callback_query(F.data == "adm:user_balance")
 async def adm_user_balance(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-
     await state.set_state(UserLookup.user)
+    await callback.message.answer("Введи username или user_id пользователя:")
 
-    await callback.message.answer(
-        "Введи username или user_id пользователя:"
-    )
 
 @router.message(UserLookup.user)
-async def adm_user_balance_show(message: Message, state: FSMContext):
-    value = message.text.strip()
+async def adm_user_balance_show(message: Message, state: FSMContext, db):
+    value = (message.text or "").strip()
 
     if value.isdigit():
         user_id = int(value)
     else:
         username = value.lstrip("@")
-        cursor.execute("SELECT user_id FROM users WHERE username = ?", (username,))
-        row = cursor.fetchone()
+        async with db.execute("SELECT user_id FROM users WHERE username = ? LIMIT 1", (username,)) as cur:
+            row = await cur.fetchone()
         if not row:
             await message.answer("❌ Пользователь не найден")
             return
-        user_id = row[0]
+        user_id = int(row[0])
 
-    balance = get_balance(user_id)
-    history = ledger_user_history(user_id)
+    balance = await get_balance(db, user_id)
+    history = await ledger_user_history(db, user_id)
 
     lines = []
-    for created_at, delta, reason, campaign_key in history:
+    for r in history:
+        created_at, delta, reason, campaign_key = r[0], r[1], r[2], r[3]
         ck = f" ({campaign_key})" if campaign_key else ""
         lines.append(f"{created_at}: {float(delta):g}⭐ {reason}{ck}")
 
@@ -460,12 +515,13 @@ async def adm_user_balance_show(message: Message, state: FSMContext):
 
     await message.answer(
         f"👤 User ID: {user_id}\n"
-        f"⭐ Баланс: {balance:.2f}\n\n"
+        f"⭐ Баланс: {fmt_stars(balance)}\n\n"
         f"📜 Последние операции:\n" + "\n".join(lines),
         reply_markup=admin_user_kb(user_id)
     )
 
     await state.clear()
+
 
 @router.callback_query(F.data.startswith("adm:ub:add:"))
 async def adm_user_add_start(callback: CallbackQuery, state: FSMContext):
@@ -477,6 +533,7 @@ async def adm_user_add_start(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.answer("Введите сумму ⭐ для начисления:")
 
+
 @router.callback_query(F.data.startswith("adm:ub:sub:"))
 async def adm_user_sub_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -487,14 +544,15 @@ async def adm_user_sub_start(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.answer("Введите сумму ⭐ для списания:")
 
+
 @router.message(AdminAdjust.amount)
-async def adm_user_adjust_finish(message: Message, state: FSMContext):
+async def adm_user_adjust_finish(message: Message, state: FSMContext, db):
     data = await state.get_data()
     user_id = int(data["adj_user_id"])
     mode = data["adj_mode"]
 
     try:
-        amount = float(message.text.strip().replace(",", "."))
+        amount = float((message.text or "").strip().replace(",", "."))
         if amount <= 0:
             raise ValueError
     except ValueError:
@@ -504,27 +562,225 @@ async def adm_user_adjust_finish(message: Message, state: FSMContext):
     delta = amount if mode == "add" else -amount
 
     try:
-        conn.execute("BEGIN")
-        add_balance(user_id, delta)
-        ledger_add(
-            user_id=user_id,
-            delta=delta,
-            reason="admin_adjust",
-            campaign_key=None,
-            meta=f"mode={mode}",
-        )
-        conn.commit()
+        async with tx(db):
+            await apply_balance_delta(
+                db,
+                user_id=user_id,
+                delta=delta,
+                reason="admin_adjust",
+                meta=f"mode={mode}",
+            )
     except Exception:
-        conn.rollback()
         await message.answer("❌ Ошибка операции, попробуй ещё раз")
         return
 
-    balance = get_balance(user_id)
+    balance = await get_balance(db, user_id)
     await state.clear()
 
     await message.answer(
         f"✅ Готово\n"
         f"Изменение: {delta:+.2f}⭐\n"
-        f"Новый баланс: {balance:.2f}⭐",
+        f"Новый баланс: {fmt_stars(balance)}⭐",
         reply_markup=admin_user_kb(user_id)
+    )
+
+
+@router.callback_query(F.data == "adm:wd:list")
+async def adm_withdraw_list(callback: CallbackQuery, db):
+    await callback.answer()
+
+    rows = await list_withdrawals(db, status="pending", limit=20)
+
+    if not rows:
+        await callback.message.edit_text(
+            "✅ Нет заявок на вывод (pending).",
+            reply_markup=admin_back_kb()
+        )
+        return
+
+    await callback.message.edit_text(
+        "💸 Заявки на вывод (pending):",
+        reply_markup=admin_withdraw_list_kb(rows)
+    )
+
+
+@router.callback_query(F.data.startswith("adm:wd:open:"))
+async def adm_withdraw_open(callback: CallbackQuery, db):
+    await callback.answer()
+
+    wid = int(callback.data.split(":")[3])
+
+    row = await get_withdrawal(db, wid)
+    if not row:
+        await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+
+    _id, user_id, username, amount, method, details, status, created_at = (
+        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+    )
+
+    name = f"@{username}" if username else f"id:{user_id}"
+    det = details or "—"
+
+    await callback.message.edit_text(
+        f"💸 Заявка #{_id}\n\n"
+        f"👤 {name}\n"
+        f"⭐ Сумма: {float(amount):g}\n"
+        f"🔧 Метод: {method}\n"
+        f"🧾 Детали: {det}\n"
+        f"📌 Статус: {status}\n"
+        f"🕒 Создано: {created_at}",
+        reply_markup=admin_withdraw_actions_kb(_id)
+    )
+
+
+@router.callback_query(F.data.startswith("adm:wd:paid:"))
+async def adm_withdraw_paid(callback: CallbackQuery, db):
+    await callback.answer()
+
+    wid = int(callback.data.split(":")[3])
+    admin_id = callback.from_user.id
+
+    row = await get_withdrawal(db, wid)
+    if not row:
+        await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+
+    _id, user_id, username, amount, method, details, status, created_at = (
+        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+    )
+
+    if status != "pending":
+        await callback.answer("⚠️ Уже обработана", show_alert=True)
+        return
+
+    try:
+        async with tx(db):
+            row2 = await get_withdrawal(db, wid)
+            if not row2:
+                await callback.answer("❌ Заявка не найдена", show_alert=True)
+                return
+
+            status2 = row2[6]
+            if status2 != "pending":
+                await callback.answer("⚠️ Уже обработана", show_alert=True)
+                return
+
+            await set_withdrawal_status(db, wid, "paid", admin_id)
+
+            await ledger_add(
+                db,
+                user_id=user_id,
+                delta=0.0,
+                reason="withdraw_paid",
+                withdrawal_id=wid,
+                meta=f"method={method}",
+            )
+
+        try:
+            await callback.bot.send_message(
+                user_id,
+                f"✅ Твоя заявка на вывод #{wid} выплачена.\n"
+                f"Сумма: {float(amount):g}⭐\n"
+                f"Метод: {str(method).upper()}"
+            )
+        except Exception:
+            pass  # юзер мог заблокировать бота / закрыть ЛС
+
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {type(e).__name__}: {e}", show_alert=True)
+        return
+
+    await callback.answer("✅ Отмечено как выплачено", show_alert=True)
+    await adm_withdraw_open(callback)
+
+
+@router.callback_query(F.data.startswith("adm:wd:reject:"))
+async def adm_withdraw_reject(callback: CallbackQuery, db):
+    await callback.answer()
+
+    wid = int(callback.data.split(":")[3])
+    admin_id = callback.from_user.id
+
+    row = await get_withdrawal(db, wid)
+    if not row:
+        await callback.answer("❌ Заявка не найдена", show_alert=True)
+        return
+
+    _id, user_id, username, amount, method, details, status, created_at = (
+        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+    )
+
+    if status != "pending":
+        await callback.answer("⚠️ Уже обработана", show_alert=True)
+        return
+
+    try:
+        async with tx(db):
+            row2 = await get_withdrawal(db, wid)
+            if not row2:
+                await callback.answer("❌ Заявка не найдена", show_alert=True)
+                return
+
+            status2 = row2[6]
+            if status2 != "pending":
+                await callback.answer("⚠️ Уже обработана", show_alert=True)
+                return
+
+            await set_withdrawal_status(db, wid, "rejected", admin_id)
+
+            await apply_balance_delta(
+                db,
+                user_id=int(user_id),
+                delta=float(amount),
+                reason="withdraw_release",
+                withdrawal_id=int(wid),
+                meta="rejected",
+            )
+
+        try:
+            await callback.bot.send_message(
+                int(user_id),
+                f"❌ Твоя заявка на вывод #{wid} отклонена.\n"
+                f"Сумма: {float(amount):g}⭐ возвращена на баланс."
+            )
+        except Exception:
+            pass
+
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {type(e).__name__}: {e}", show_alert=True)
+        return
+
+    await callback.answer("✅ Отклонено и возвращено на баланс", show_alert=True)
+    await adm_withdraw_open(callback)
+
+
+@router.callback_query(F.data == "adm:audit")
+async def adm_audit_balances(callback: CallbackQuery, db):
+    await callback.answer()
+
+    rows = await balances_audit(db, limit=10)
+
+    if not rows:
+        await callback.message.edit_text(
+            "🧮 Сверка балансов\n\n✅ Расхождений не найдено.",
+            reply_markup=admin_back_kb()
+        )
+        return
+
+    lines = []
+    for r in rows:
+        user_id, username, users_balance, ledger_sum, diff = r[0], r[1], r[2], r[3], r[4]
+        name = f"@{username}" if username else f"id:{user_id}"
+        lines.append(
+            f"{name}\n"
+            f"users.balance: {float(users_balance):.2f}⭐\n"
+            f"ledger SUM:   {float(ledger_sum):.2f}⭐\n"
+            f"diff:         {float(diff):+.2f}⭐\n"
+        )
+
+    await callback.message.edit_text(
+        "🧮 Сверка балансов\n\n"
+        "Найдены расхождения (топ-10 по модулю):\n\n" + "\n".join(lines),
+        reply_markup=admin_back_kb()
     )

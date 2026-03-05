@@ -16,3 +16,7 @@ class UserLookup(StatesGroup):
 
 class AdminAdjust(StatesGroup):
     amount = State()
+
+class WithdrawCreate(StatesGroup):
+    amount = State()
+    details = State()
