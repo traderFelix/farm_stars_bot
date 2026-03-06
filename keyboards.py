@@ -37,7 +37,7 @@ def withdraw_method_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💎 TON", callback_data="withdraw:method:ton")],
         [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="withdraw:method:stars")],
-        [InlineKeyboardButton(text="⬅ Назад", callback_data="back")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="withdraw")],
     ])
 
 def tasks_menu() -> InlineKeyboardMarkup:

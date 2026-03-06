@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, TelegramObject, BufferedInputFile
+from aiogram.types import Message, CallbackQuery, TelegramObject, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Filter
 
@@ -116,43 +116,37 @@ async def adm_list(callback: CallbackQuery, db):
 
 
 @router.callback_query(F.data.startswith("adm:open:"))
-async def adm_open(callback: CallbackQuery):
+async def adm_open(callback: CallbackQuery, db):
     await callback.answer()
     key = callback.data.split(":", 2)[2]
-    await _render_campaign_card(callback, key)
+    await _render_campaign_card(callback, key, db)
 
 
 @router.callback_query(F.data.startswith("adm:on:"))
 async def adm_on(callback: CallbackQuery, db):
     await callback.answer()
-
     key = callback.data.split(":", 2)[2]
     async with tx(db, immediate=False):
         await set_campaign_status(db, key, "active")
-
-    await _render_campaign_card(callback, key)
+    await _render_campaign_card(callback, key, db)
 
 
 @router.callback_query(F.data.startswith("adm:off:"))
 async def adm_off(callback: CallbackQuery, db):
     await callback.answer()
-
     key = callback.data.split(":", 2)[2]
     async with tx(db, immediate=False):
         await set_campaign_status(db, key, "ended")
-
-    await _render_campaign_card(callback, key)
+    await _render_campaign_card(callback, key, db)
 
 
 @router.callback_query(F.data.startswith("adm:del:"))
 async def adm_delete(callback: CallbackQuery, db):
     await callback.answer()
-
     key = callback.data.split(":", 2)[2]
     async with tx(db):
         await delete_campaign(db, key)
-
-    await adm_list(callback)
+    await adm_list(callback, db)
 
 
 @router.callback_query(F.data.startswith("adm:add_winners:"))
@@ -306,7 +300,13 @@ async def adm_show_winners(callback: CallbackQuery, db):
     key = callback.data.split(":")[2]
 
     winners = await list_winners(db, key)
-    claimed = set(await claimed_usernames(db, key))  # кто заклеймил
+    claimed = set(await claimed_usernames(db, key))
+
+    back_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅ Назад", callback_data=f"adm:open:{key}")]
+        ]
+    )
 
     if not winners:
         text = "Победителей нет"
@@ -318,8 +318,8 @@ async def adm_show_winners(callback: CallbackQuery, db):
         text = "\n".join(lines)
 
     await callback.message.edit_text(
-        f"👥 Победители конкурса {key}:\n\n{text}",
-        reply_markup=admin_back_kb()
+        f"🏆 Победители конкурса {key}:\n\n{text}",
+        reply_markup=back_kb
     )
 
 

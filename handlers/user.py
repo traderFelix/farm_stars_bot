@@ -121,19 +121,21 @@ async def claim_menu(callback: CallbackQuery, db):
 
 @router.callback_query(F.data.startswith("claim:"))
 async def claim_for_campaign(callback: CallbackQuery, db):
+    await callback.answer()
+
     user_id = callback.from_user.id
     username = callback.from_user.username
     campaign_key = callback.data.split(":", 1)[1]
 
-    await register_user(
-        db,
-        user_id,
-        username,
-        callback.from_user.first_name,
-        callback.from_user.last_name
+    ok, msg, new_balance = await claim_reward(
+        db=db,
+        user_id=user_id,
+        username=username,
+        campaign_key=campaign_key,
+        first_name=callback.from_user.first_name,
+        last_name=callback.from_user.last_name,
     )
 
-    ok, msg, new_balance = await claim_reward(db, user_id, username, campaign_key)
     if not ok:
         await callback.answer(msg, show_alert=True)
         return

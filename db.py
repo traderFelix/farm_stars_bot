@@ -1,4 +1,4 @@
-import aiosqlite
+import aiosqlite, uuid
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
 from config import DB_PATH
@@ -8,7 +8,11 @@ from decimal import Decimal, ROUND_DOWN
 # ---------- Connection / TX ----------
 
 async def open_db() -> aiosqlite.Connection:
-    db = await aiosqlite.connect(DB_PATH, timeout=30)
+    db = await aiosqlite.connect(
+        DB_PATH,
+        timeout=30,
+        isolation_level=None,  # важно
+    )
     db.row_factory = aiosqlite.Row
 
     await db.execute("PRAGMA journal_mode=WAL;")
@@ -23,13 +27,24 @@ async def close_db(db: aiosqlite.Connection) -> None:
 
 @asynccontextmanager
 async def tx(db: aiosqlite.Connection, immediate: bool = True):
-    await db.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
-    try:
-        yield
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
+    if getattr(db, "in_transaction", False):
+        sp_name = f"sp_{uuid.uuid4().hex}"
+        await db.execute(f'SAVEPOINT "{sp_name}"')
+        try:
+            yield
+            await db.execute(f'RELEASE SAVEPOINT "{sp_name}"')
+        except Exception:
+            await db.execute(f'ROLLBACK TO SAVEPOINT "{sp_name}"')
+            await db.execute(f'RELEASE SAVEPOINT "{sp_name}"')
+            raise
+    else:
+        await db.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
+        try:
+            yield
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def init_db(db: aiosqlite.Connection) -> None:
@@ -423,12 +438,16 @@ async def claim_reward(
         user_id: int,
         username: Optional[str],
         campaign_key: str,
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None,
 ) -> tuple[bool, str, float]:
 
     uid = int(user_id)
     ck = (campaign_key or "").strip()
 
-    async with tx(db):
+    async with tx(db, immediate=True):
+        await register_user(db, uid, username, first_name, last_name)
+
         row = await get_campaign(db, ck)
         if not row:
             return False, "❌ Конкурс не найден", 0.0
@@ -459,8 +478,7 @@ async def claim_reward(
         )
 
         new_balance = await get_balance(db, uid)
-
-    return True, f"✅ Ты получил {reward_amount:g}⭐️ ({title})", float(new_balance)
+        return True, f"✅ Ты получил {reward_amount:g}⭐️ ({title})", float(new_balance)
 
 # ---------- Totals for admin dashboard ----------
 
