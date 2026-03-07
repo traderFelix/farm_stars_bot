@@ -131,8 +131,6 @@ async def claim_menu(callback: CallbackQuery, db):
 
 @router.callback_query(F.data.startswith("claim:"))
 async def claim_for_campaign(callback: CallbackQuery, db):
-    await callback.answer()
-
     user_id = callback.from_user.id
     username = callback.from_user.username
     campaign_key = callback.data.split(":", 1)[1]
@@ -149,6 +147,8 @@ async def claim_for_campaign(callback: CallbackQuery, db):
     if not ok:
         await callback.answer(msg, show_alert=True)
         return
+
+    await callback.answer()
 
     await callback.message.edit_text(
         f"{msg}\n\nБаланс: {fmt_stars(new_balance)}⭐️",
