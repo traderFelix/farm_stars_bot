@@ -1,4 +1,4 @@
-import aiosqlite, uuid
+import aiosqlite, uuid, asyncio
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
 from config import DB_PATH
@@ -20,6 +20,8 @@ async def open_db() -> aiosqlite.Connection:
     await db.execute("PRAGMA foreign_keys=ON;")
     await db.execute("PRAGMA busy_timeout=30000;")
 
+    db._tx_lock = asyncio.Lock()
+
     return db
 
 async def close_db(db: aiosqlite.Connection) -> None:
@@ -38,13 +40,14 @@ async def tx(db: aiosqlite.Connection, immediate: bool = True):
             await db.execute(f'RELEASE SAVEPOINT "{sp_name}"')
             raise
     else:
-        await db.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
-        try:
-            yield
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            raise
+        async with db._tx_lock:
+            await db.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
+            try:
+                yield
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
 
 async def init_db(db: aiosqlite.Connection) -> None:

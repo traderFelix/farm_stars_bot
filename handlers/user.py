@@ -108,14 +108,24 @@ async def claim_menu(callback: CallbackQuery, db):
     for row in campaigns:
         key, title, amount = row[0], row[1], row[2]
         keyboard.append([
-            InlineKeyboardButton(text=f"🎁 Забрать {key}", callback_data=f"claim:{key}")
+            InlineKeyboardButton(
+                text=f"🎁 {title} • {amount}⭐",
+                callback_data=f"claim:{key}"
+            )
         ])
 
     keyboard.append([InlineKeyboardButton(text="⬅ Назад", callback_data="back")])
 
+    text = "Выбери конкурс для получения награды:"
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    if callback.message.text == text:
+        await callback.message.edit_reply_markup(reply_markup=markup)
+        return
+
     await callback.message.edit_text(
-        "Выбери конкурс для получения награды:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        text,
+        reply_markup=markup,
     )
 
 
