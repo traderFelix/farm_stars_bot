@@ -12,7 +12,7 @@ from db import (
 )
 
 from keyboards import (
-    subscribe_keyboard, main_menu, tasks_menu,
+    subscribe_keyboard, main_menu, tasks_menu, bottom_menu_kb,
     withdraw_method_kb, withdraw_menu_kb, withdraw_back_kb
 )
 
@@ -47,7 +47,16 @@ async def start(message: Message, bot: Bot, db):
 
     if member.status in ("member", "administrator", "creator"):
         balance = await get_balance(db, user_id)
-        await message.answer(menu_text(balance), reply_markup=main_menu(is_admin(user_id)))
+
+        await message.answer(
+            "Нажми кнопку снизу, чтобы открыть меню 👇",
+            reply_markup=bottom_menu_kb()
+        )
+
+        await message.answer(
+            menu_text(balance),
+            reply_markup=main_menu(is_admin(user_id))
+        )
     else:
         await message.answer("Чтобы продолжить, подпишись на канал 👇", reply_markup=subscribe_keyboard())
 
@@ -64,7 +73,16 @@ async def check_subscription(callback: CallbackQuery, bot: Bot, db):
 
     if member.status in ("member", "administrator", "creator"):
         balance = await get_balance(db, user_id)
-        await callback.message.edit_text(menu_text(balance), reply_markup=main_menu(is_admin(user_id)))
+
+        await callback.message.answer(
+            "Нажми кнопку снизу, чтобы открыть меню 👇",
+            reply_markup=bottom_menu_kb()
+        )
+
+        await callback.message.edit_text(
+            menu_text(balance),
+            reply_markup=main_menu(is_admin(user_id))
+        )
     else:
         await callback.answer("❌ Ты ещё не подписан!", show_alert=True)
 
@@ -265,8 +283,7 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
         f"ID: #{wid}\n"
         f"Сумма: {amount:g}⭐\n"
         f"Способ: Telegram Stars\n\n"
-        f"Баланс: {fmt_stars(new_balance)}⭐",
-        reply_markup=main_menu(is_admin(user_id)),
+        f"Баланс: {fmt_stars(new_balance)}⭐"
     )
 
 
@@ -333,8 +350,7 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
         f"Сумма: {amount:g}⭐\n"
         f"Способ: TON\n"
         f"Кошелёк: {details}\n\n"
-        f"Баланс: {fmt_stars(new_balance)}⭐",
-        reply_markup=main_menu(is_admin(user_id)),
+        f"Баланс: {fmt_stars(new_balance)}⭐"
     )
 
 
@@ -387,4 +403,14 @@ async def withdraw_new(callback: CallbackQuery, state: FSMContext, db):
         f"Минимум: {MIN_WITHDRAW:g}⭐\n\n"
         "Выбери способ вывода:",
         reply_markup=withdraw_method_kb()
+    )
+
+@router.message(F.text == "🏠 Главное меню")
+async def open_main_menu_from_bottom_button(message: Message, db):
+    user_id = message.from_user.id
+    balance = await get_balance(db, user_id)
+
+    await message.answer(
+        menu_text(balance),
+        reply_markup=main_menu(is_admin(user_id)),
     )
