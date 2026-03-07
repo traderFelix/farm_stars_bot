@@ -265,7 +265,8 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
         f"ID: #{wid}\n"
         f"Сумма: {amount:g}⭐\n"
         f"Способ: Telegram Stars\n\n"
-        f"Баланс: {fmt_stars(new_balance)}⭐"
+        f"Баланс: {fmt_stars(new_balance)}⭐",
+        reply_markup=main_menu(is_admin(user_id)),
     )
 
 
@@ -332,7 +333,8 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
         f"Сумма: {amount:g}⭐\n"
         f"Способ: TON\n"
         f"Кошелёк: {details}\n\n"
-        f"Баланс: {fmt_stars(new_balance)}⭐"
+        f"Баланс: {fmt_stars(new_balance)}⭐",
+        reply_markup=main_menu(is_admin(user_id)),
     )
 
 
