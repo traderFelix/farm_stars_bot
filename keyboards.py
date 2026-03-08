@@ -9,7 +9,7 @@ def bottom_menu_kb() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         one_time_keyboard=False,
         selective=False,
-        input_field_placeholder="Нажми «Главное меню»"
+        input_field_placeholder=""
     )
 
 # ---------- USER KEYBOARDS ----------
@@ -162,7 +162,7 @@ def campaign_manage_kb(key: str, status: str) -> InlineKeyboardMarkup:
 
     keyboard.append([
         InlineKeyboardButton(text="➖ Удалить победителя", callback_data=f"adm:winner_del:{key}"),
-        InlineKeyboardButton(text="🗑 Удалить конкурс", callback_data=f"adm:del:{key}"),
+        InlineKeyboardButton(text="🗑 Удалить конкурс", callback_data=f"adm:del:ask:{key}"),
     ])
 
     keyboard.append([
@@ -170,6 +170,14 @@ def campaign_manage_kb(key: str, status: str) -> InlineKeyboardMarkup:
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def campaign_delete_confirm_kb(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"adm:del:do:{key}")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data=f"adm:open:{key}")],
+        ]
+    )
 
 def campaign_created_kb(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

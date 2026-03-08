@@ -166,11 +166,9 @@ async def claim_for_campaign(callback: CallbackQuery, db):
         await callback.answer(msg, show_alert=True)
         return
 
-    await callback.answer()
-
-    await callback.message.edit_text(
-        f"{msg}\n\nБаланс: {fmt_stars(new_balance)}⭐️",
-        reply_markup=main_menu(is_admin(user_id)),
+    await callback.answer(
+        f"{msg}\nБаланс: {fmt_stars(new_balance)}⭐️",
+        show_alert=True
     )
 
 @router.callback_query(F.data == "withdraw")
@@ -406,7 +404,9 @@ async def withdraw_new(callback: CallbackQuery, state: FSMContext, db):
     )
 
 @router.message(F.text == "🏠 Главное меню")
-async def open_main_menu_from_bottom_button(message: Message, db):
+async def open_main_menu_from_bottom_button(message: Message, state: FSMContext, db):
+    await state.clear()
+
     user_id = message.from_user.id
     balance = await get_balance(db, user_id)
 

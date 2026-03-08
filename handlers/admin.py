@@ -40,7 +40,7 @@ from db import (
 
 from keyboards import (
     main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb,
-    campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb
+    campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb
 )
 
 from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust
@@ -140,12 +140,39 @@ async def adm_off(callback: CallbackQuery, db):
     await _render_campaign_card(callback, key, db)
 
 
-@router.callback_query(F.data.startswith("adm:del:"))
-async def adm_delete(callback: CallbackQuery, db):
+@router.callback_query(F.data.startswith("adm:del:ask:"))
+async def adm_delete_ask(callback: CallbackQuery, db):
     await callback.answer()
-    key = callback.data.split(":", 2)[2]
+    key = callback.data.split(":", 3)[3]
+
+    row = await get_campaign(db, key)
+    if not row:
+        await callback.message.edit_text(
+            "❌ Конкурс не найден.",
+            reply_markup=admin_back_kb()
+        )
+        return
+
+    _k, title, amount, status = row[0], row[1], row[2], row[3]
+
+    await callback.message.edit_text(
+        f"⚠️ Ты точно хочешь удалить конкурс?\n\n"
+        f"KEY: {key}\n"
+        f"Название: {title}\n"
+        f"Награда: {amount}⭐\n"
+        f"Статус: {status}",
+        reply_markup=campaign_delete_confirm_kb(key),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:del:do:"))
+async def adm_delete_do(callback: CallbackQuery, db):
+    await callback.answer()
+    key = callback.data.split(":", 3)[3]
+
     async with tx(db):
         await delete_campaign(db, key)
+
     await adm_list(callback, db)
 
 
