@@ -25,7 +25,8 @@ from db import (
 
     # stats
     campaign_stats, list_winners, claimed_usernames, global_claims_stats, campaigns_status_counts, total_balances,
-    unclaimed_total_amount, total_assigned_amount,
+    unclaimed_total_amount, total_assigned_amount, admin_balance_changes, total_withdrawn_amount, pending_withdrawn_amount,
+    ledger_sum_by_reason,
 
     # users/growth
     top_users_by_balance, users_total_count, users_new_since_hours, users_new_since_days, users_active_since_days,
@@ -277,16 +278,14 @@ async def adm_stats_menu(callback: CallbackQuery, db):
 
     total_assigned_sum = await total_assigned_amount(db)
     claims_count_all, total_claimed_all = await global_claims_stats(db)
-    total_balances_sum = await total_balances(db)
     active_cnt, ended_cnt, draft_cnt = await campaigns_status_counts(db)
     unclaimed_sum = await unclaimed_total_amount(db)
 
     await callback.message.edit_text(
         "📊 Полная статистика:\n\n"
-        f"🎁 Всего начислено: {total_assigned_sum:.2f}⭐\n"
+        f"🎁 Начислено в конкурсах: {total_assigned_sum:.2f}⭐\n"
         f"📦 Невостребовано: {unclaimed_sum:.2f}⭐\n"
         f"💰 Всего заклеймили: {total_claimed_all:.2f}⭐\n ({claims_count_all} клеймов)\n"
-        f"🏦 Всего на балансах: {total_balances_sum:.2f}⭐\n\n"
         f"🟡 Черновиков: {draft_cnt}\n"
         f"🟢 Активных конкурсов: {active_cnt}\n"
         f"🔴 Завершённых: {ended_cnt}\n\n"
@@ -786,28 +785,38 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
 async def adm_audit_balances(callback: CallbackQuery, db):
     await callback.answer()
 
-    rows = await balances_audit(db, limit=10)
+    mismatches = await balances_audit(db)
+    total_balances_sum = await total_balances(db)
+    claims_count_all, total_claimed_all = await global_claims_stats(db)
+    admin_added, admin_removed = await admin_balance_changes(db)
+    total_withdrawn_sum = await total_withdrawn_amount(db)
+    pending_withdrawn_sum = await pending_withdrawn_amount(db)
+    claimed_from_ledger = await ledger_sum_by_reason(db, "claim")
 
-    if not rows:
-        await callback.message.edit_text(
-            "🧮 Сверка балансов\n\n✅ Расхождений не найдено.",
-            reply_markup=admin_back_kb()
-        )
-        return
+    lines = ["🧮 Сверка балансов", ""]
 
-    lines = []
-    for r in rows:
-        user_id, username, users_balance, ledger_sum, diff = r[0], r[1], r[2], r[3], r[4]
-        name = f"@{username}" if username else f"id:{user_id}"
-        lines.append(
-            f"{name}\n"
-            f"users.balance: {float(users_balance):.2f}⭐\n"
-            f"ledger SUM:   {float(ledger_sum):.2f}⭐\n"
-            f"diff:         {float(diff):+.2f}⭐\n"
-        )
+    if not mismatches:
+        lines.append("✅ Расхождений не найдено")
+    else:
+        lines.append(f"⚠️ Найдено расхождений: {len(mismatches)}")
+        lines.append("")
+        lines.append("Первые 10:")
+        for row in mismatches[:10]:
+            user_id, balance, ledger_sum = row[0], row[1], row[2]
+            lines.append(
+                f"user_id={user_id}: balance={fmt_stars(balance)}⭐ / ledger={fmt_stars(ledger_sum)}⭐"
+            )
+
+    lines += [
+        f"\nБаланс пользователей: {fmt_stars(total_balances_sum)}⭐\n",
+        f"Получено в конкурсах (база): {fmt_stars(total_claimed_all)}⭐",
+        f"Получено в конкурсах (леджер): {fmt_stars(claimed_from_ledger)}⭐",
+        f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐",
+        f"Выведено: {fmt_stars(total_withdrawn_sum)}⭐",
+        f"В обработке: {fmt_stars(pending_withdrawn_sum)}⭐",
+    ]
 
     await callback.message.edit_text(
-        "🧮 Сверка балансов\n\n"
-        "Найдены расхождения (топ-10 по модулю):\n\n" + "\n".join(lines),
-        reply_markup=admin_back_kb()
+        "\n".join(lines),
+        reply_markup=admin_back_kb(),
     )

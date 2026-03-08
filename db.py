@@ -749,3 +749,50 @@ def stars(value) -> Decimal:
 
 def fmt_stars(v):
     return f"{Decimal(v):.2f}"
+
+async def admin_balance_changes(db: aiosqlite.Connection) -> tuple[int, int]:
+    query = """
+    SELECT
+        COALESCE(SUM(CASE WHEN delta > 0 THEN delta END), 0) AS added,
+        COALESCE(SUM(CASE WHEN delta < 0 THEN -delta END), 0) AS removed
+    FROM ledger
+    WHERE reason = 'admin_adjust'
+    """
+
+    async with db.execute(query) as cur:
+        row = await cur.fetchone()
+        added = int(row[0] or 0)
+        removed = int(row[1] or 0)
+
+    return added, removed
+
+async def total_withdrawn_amount(db: aiosqlite.Connection) -> int:
+    query = """
+    SELECT COALESCE(SUM(amount), 0)
+    FROM withdrawals
+    WHERE status = 'paid'
+    """
+
+    async with db.execute(query) as cur:
+        row = await cur.fetchone()
+        return int(row[0] or 0)
+
+async def pending_withdrawn_amount(db: aiosqlite.Connection) -> int:
+    query = """
+    SELECT COALESCE(SUM(amount), 0)
+    FROM withdrawals
+    WHERE status = 'pending'
+    """
+    async with db.execute(query) as cur:
+        row = await cur.fetchone()
+        return int(row[0] or 0)
+
+async def ledger_sum_by_reason(db: aiosqlite.Connection, reason: str) -> float:
+    query = """
+    SELECT COALESCE(SUM(delta), 0)
+    FROM ledger
+    WHERE reason = ?
+    """
+    async with db.execute(query, (reason,)) as cur:
+        row = await cur.fetchone()
+        return float(row[0] or 0)

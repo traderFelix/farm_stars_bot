@@ -1,6 +1,6 @@
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 
 from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW
@@ -27,6 +27,18 @@ def menu_text(balance: float) -> str:
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+@router.message(StateFilter("*"), F.text == "🏠 Главное меню")
+async def open_main_menu_from_bottom_button(message: Message, state: FSMContext, db):
+    await state.clear()
+
+    user_id = message.from_user.id
+    balance = await get_balance(db, user_id)
+
+    await message.answer(
+        menu_text(balance),
+        reply_markup=main_menu(is_admin(user_id)),
+    )
 
 
 @router.message(CommandStart())
@@ -401,16 +413,4 @@ async def withdraw_new(callback: CallbackQuery, state: FSMContext, db):
         f"Минимум: {MIN_WITHDRAW:g}⭐\n\n"
         "Выбери способ вывода:",
         reply_markup=withdraw_method_kb()
-    )
-
-@router.message(F.text == "🏠 Главное меню")
-async def open_main_menu_from_bottom_button(message: Message, state: FSMContext, db):
-    await state.clear()
-
-    user_id = message.from_user.id
-    balance = await get_balance(db, user_id)
-
-    await message.answer(
-        menu_text(balance),
-        reply_markup=main_menu(is_admin(user_id)),
     )
