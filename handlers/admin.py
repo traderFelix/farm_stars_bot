@@ -630,12 +630,7 @@ async def adm_withdraw_list(callback: CallbackQuery, db):
     )
 
 
-@router.callback_query(F.data.startswith("adm:wd:open:"))
-async def adm_withdraw_open(callback: CallbackQuery, db):
-    await callback.answer()
-
-    wid = int(callback.data.split(":")[3])
-
+async def _render_withdraw_card(callback: CallbackQuery, wid: int, db):
     row = await get_withdrawal(db, wid)
     if not row:
         await callback.answer("❌ Заявка не найдена", show_alert=True)
@@ -658,6 +653,13 @@ async def adm_withdraw_open(callback: CallbackQuery, db):
         f"🕒 Создано: {created_at}",
         reply_markup=admin_withdraw_actions_kb(_id)
     )
+
+
+@router.callback_query(F.data.startswith("adm:wd:open:"))
+async def adm_withdraw_open(callback: CallbackQuery, db):
+    await callback.answer()
+    wid = int(callback.data.split(":")[3])
+    await _render_withdraw_card(callback, wid, db)
 
 
 @router.callback_query(F.data.startswith("adm:wd:paid:"))
@@ -718,7 +720,7 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
         return
 
     await callback.answer("✅ Отмечено как выплачено", show_alert=True)
-    await adm_withdraw_open(callback)
+    await _render_withdraw_card(callback, wid, db)
 
 
 @router.callback_query(F.data.startswith("adm:wd:reject:"))
@@ -778,7 +780,7 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
         return
 
     await callback.answer("✅ Отклонено и возвращено на баланс", show_alert=True)
-    await adm_withdraw_open(callback)
+    await _render_withdraw_card(callback, wid, db)
 
 
 @router.callback_query(F.data == "adm:audit")

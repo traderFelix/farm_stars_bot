@@ -8,7 +8,8 @@ from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW
 from db import (
     tx, fmt_stars,
     register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough,
-    claim_reward, list_active_campaigns
+    claim_reward, list_active_campaigns, log_abuse_event, count_recent_abuse_events, sum_recent_abuse_amount,
+    has_pending_withdrawal, user_created_hours_ago, wallet_used_by_another_user, wallet_users
 )
 
 from keyboards import (
@@ -165,6 +166,18 @@ async def claim_for_campaign(callback: CallbackQuery, db):
     username = callback.from_user.username
     campaign_key = callback.data.split(":", 1)[1]
 
+    recent_claim_clicks = await count_recent_abuse_events(db, user_id, "claim_click", 1)
+    if recent_claim_clicks >= 3:
+        await callback.answer("⏳ Слишком часто. Попробуй через минуту.", show_alert=True)
+        return
+
+    recent_claim_fails = await count_recent_abuse_events(db, user_id, "claim_fail", 10)
+    if recent_claim_fails >= 10:
+        await callback.answer("🚫 Слишком много неудачных попыток. Попробуй позже.", show_alert=True)
+        return
+
+    await log_abuse_event(db, user_id, "claim_click")
+
     ok, msg, new_balance = await claim_reward(
         db=db,
         user_id=user_id,
@@ -175,6 +188,7 @@ async def claim_for_campaign(callback: CallbackQuery, db):
     )
 
     if not ok:
+        await log_abuse_event(db, user_id, "claim_fail")
         await callback.answer(msg, show_alert=True)
         return
 
@@ -240,6 +254,25 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
         await message.answer("❌ Недостаточно звёзд на балансе")
         return
 
+    user_age_hours = await user_created_hours_ago(db, user_id)
+    if user_age_hours < 24:
+        await message.answer("⏳ Вывод доступен только через 24 часа после регистрации.")
+        return
+
+    if await has_pending_withdrawal(db, user_id):
+        await message.answer("⏳ У тебя уже есть заявка на вывод в обработке.")
+        return
+
+    recent_withdraw_count = await count_recent_abuse_events(db, user_id, "withdraw_create", 1440)
+    if recent_withdraw_count >= 3:
+        await message.answer("🚫 Лимит: не более 3 заявок на вывод в сутки.")
+        return
+
+    recent_withdraw_sum = await sum_recent_abuse_amount(db, user_id, "withdraw_create", 24)
+    if recent_withdraw_sum + amount > 1000:
+        await message.answer("🚫 Суточный лимит вывода превышен.")
+        return
+
     await state.update_data(amount=amount)
 
     if method == "ton":
@@ -250,6 +283,9 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
     try:
         async with tx(db):
             wid = await create_withdrawal(db, user_id, amount, method="stars", details=None)
+
+            await log_abuse_event(db, user_id, "withdraw_create", amount=amount)
+
             ok = await apply_balance_debit_if_enough(
                 db,
                 user_id=user_id,
@@ -312,6 +348,9 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
     try:
         async with tx(db):
             wid = await create_withdrawal(db, user_id, amount, method, details=details)
+
+            await log_abuse_event(db, user_id, "withdraw_create", amount=amount)
+
             ok = await apply_balance_debit_if_enough(
                 db,
                 user_id=user_id,
@@ -344,6 +383,20 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
                 await bot.send_message(admin_id, admin_text)
             except:
                 pass
+
+        wallet_abuse = await wallet_used_by_another_user(db, user_id, details)
+        if wallet_abuse:
+            for admin_id in ADMIN_IDS:
+                used_by = await wallet_users(db, details)
+                used_by_text = "\n".join(used_by) if used_by else "нет данных"
+
+                await bot.send_message(
+                    admin_id,
+                    f"🚨 Подозрение на мультиаккаунт\n\n"
+                    f"Новый пользователь: @{message.from_user.username or 'no_username'} (id={user_id})\n"
+                    f"Кошелек:\n{details}\n\n"
+                    f"Уже использовали:\n{used_by_text}"
+                )
 
     except Exception as e:
         if isinstance(e, ValueError) and str(e) == "insufficient_balance":

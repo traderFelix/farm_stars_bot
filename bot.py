@@ -5,7 +5,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import TOKEN
 from db import open_db, close_db, init_db
-from handlers import user_router, admin_router
+from handlers import user_router, admin_router, errors_router
 from middlewares.db import DbMiddleware
 
 
@@ -25,6 +25,7 @@ async def main():
 
         dp.include_router(user_router)
         dp.include_router(admin_router)
+        dp.include_router(errors_router)
 
         await dp.start_polling(bot)
 

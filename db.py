@@ -120,6 +120,14 @@ async def init_db(db: aiosqlite.Connection) -> None:
       FOREIGN KEY (user_id) REFERENCES users(user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS abuse_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    action TEXT NOT NULL,              -- claim_click | claim_fail | withdraw_create
+    amount NUMERIC DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+    );
+    
     CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
     CREATE INDEX IF NOT EXISTS idx_users_last_seen_at ON users(last_seen_at);
     CREATE INDEX IF NOT EXISTS idx_campaigns_status_created ON campaigns(status, created_at);
@@ -129,6 +137,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_ledger_withdrawal ON ledger(withdrawal_id);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_abuse_events_user_action_time ON abuse_events(user_id, action, created_at);
     """)
     await db.commit()
 
@@ -796,3 +805,129 @@ async def ledger_sum_by_reason(db: aiosqlite.Connection, reason: str) -> float:
     async with db.execute(query, (reason,)) as cur:
         row = await cur.fetchone()
         return float(row[0] or 0)
+
+
+async def cleanup_abuse_events(db: aiosqlite.Connection) -> None:
+    await db.execute("""
+        DELETE FROM abuse_events
+        WHERE datetime(created_at) < datetime('now', '-1 day')
+    """)
+
+
+async def log_abuse_event(db, user_id: int, action: str, amount: float = 0):
+    await cleanup_abuse_events(db)
+
+    await db.execute(
+        """
+        INSERT INTO abuse_events (user_id, action, amount)
+        VALUES (?, ?, ?)
+        """,
+        (int(user_id), action, float(amount)),
+    )
+
+
+async def count_recent_abuse_events(
+        db: aiosqlite.Connection,
+        user_id: int,
+        action: str,
+        minutes: int,
+) -> int:
+    async with db.execute(
+            """
+        SELECT COUNT(*)
+        FROM abuse_events
+        WHERE user_id = ?
+          AND action = ?
+          AND datetime(created_at) >= datetime('now', ?)
+        """,
+            (int(user_id), action, f"-{int(minutes)} minutes"),
+    ) as cur:
+        row = await cur.fetchone()
+        return int(row[0] or 0)
+
+
+async def sum_recent_abuse_amount(
+        db: aiosqlite.Connection,
+        user_id: int,
+        action: str,
+        hours: int,
+) -> float:
+    async with db.execute(
+            """
+        SELECT COALESCE(SUM(amount), 0)
+        FROM abuse_events
+        WHERE user_id = ?
+          AND action = ?
+          AND datetime(created_at) >= datetime('now', ?)
+        """,
+            (int(user_id), action, f"-{int(hours)} hours"),
+    ) as cur:
+        row = await cur.fetchone()
+        return float(row[0] or 0.0)
+
+
+async def has_pending_withdrawal(db: aiosqlite.Connection, user_id: int) -> bool:
+    async with db.execute(
+            """
+        SELECT 1
+        FROM withdrawals
+        WHERE user_id = ?
+          AND status = 'pending'
+        LIMIT 1
+        """,
+            (int(user_id),),
+    ) as cur:
+        return await cur.fetchone() is not None
+
+
+async def user_created_hours_ago(db: aiosqlite.Connection, user_id: int) -> float:
+    async with db.execute(
+            """
+        SELECT COALESCE((julianday('now') - julianday(created_at)) * 24.0, 0)
+        FROM users
+        WHERE user_id = ?
+        """,
+            (int(user_id),),
+    ) as cur:
+        row = await cur.fetchone()
+        return float(row[0] or 0.0)
+
+async def wallet_used_by_another_user(
+        db: aiosqlite.Connection,
+        user_id: int,
+        details: str,
+) -> bool:
+    async with db.execute(
+            """
+        SELECT 1
+        FROM withdrawals
+        WHERE method = 'ton'
+          AND details = ?
+          AND user_id != ?
+        LIMIT 1
+        """,
+            (details.strip(), int(user_id)),
+    ) as cur:
+        return await cur.fetchone() is not None
+
+async def wallet_users(db, details: str) -> list[str]:
+    async with db.execute(
+            """
+        SELECT DISTINCT w.user_id, u.username
+        FROM withdrawals w
+        LEFT JOIN users u ON u.user_id = w.user_id
+        WHERE w.details = ?
+        ORDER BY w.user_id ASC
+        """,
+            (details.strip(),)
+    ) as cur:
+        rows = await cur.fetchall()
+
+    result = []
+    for user_id, username in rows:
+        if username:
+            result.append(f"@{username}")
+        else:
+            result.append(f"user_id={user_id}")
+
+    return result
