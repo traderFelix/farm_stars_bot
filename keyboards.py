@@ -1,5 +1,16 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from config import CHANNEL_LINK
+
+def bottom_menu_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏠 Главное меню")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        selective=False,
+        input_field_placeholder=""
+    )
 
 # ---------- USER KEYBOARDS ----------
 
@@ -37,7 +48,7 @@ def withdraw_method_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💎 TON", callback_data="withdraw:method:ton")],
         [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="withdraw:method:stars")],
-        [InlineKeyboardButton(text="⬅ Назад", callback_data="back")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="withdraw")],
     ])
 
 def tasks_menu() -> InlineKeyboardMarkup:
@@ -151,7 +162,7 @@ def campaign_manage_kb(key: str, status: str) -> InlineKeyboardMarkup:
 
     keyboard.append([
         InlineKeyboardButton(text="➖ Удалить победителя", callback_data=f"adm:winner_del:{key}"),
-        InlineKeyboardButton(text="🗑 Удалить конкурс", callback_data=f"adm:del:{key}"),
+        InlineKeyboardButton(text="🗑 Удалить конкурс", callback_data=f"adm:del:ask:{key}"),
     ])
 
     keyboard.append([
@@ -159,6 +170,14 @@ def campaign_manage_kb(key: str, status: str) -> InlineKeyboardMarkup:
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def campaign_delete_confirm_kb(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"adm:del:do:{key}")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data=f"adm:open:{key}")],
+        ]
+    )
 
 def campaign_created_kb(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
