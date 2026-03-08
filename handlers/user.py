@@ -162,6 +162,8 @@ async def claim_menu(callback: CallbackQuery, db):
 
 @router.callback_query(F.data.startswith("claim:"))
 async def claim_for_campaign(callback: CallbackQuery, db):
+    await callback.answer()
+
     user_id = callback.from_user.id
     username = callback.from_user.username
     campaign_key = callback.data.split(":", 1)[1]
