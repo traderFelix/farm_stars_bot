@@ -58,6 +58,8 @@ async def init_db(db: aiosqlite.Connection) -> None:
       tg_first_name TEXT,
       tg_last_name TEXT,
       balance NUMERIC DEFAULT 0 CHECK(balance >= 0),
+      is_suspicious INTEGER NOT NULL DEFAULT 0,
+      suspicious_reason TEXT,
       is_banned INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       last_seen_at TEXT DEFAULT (datetime('now'))
@@ -931,3 +933,119 @@ async def wallet_users(db, details: str) -> list[str]:
             result.append(f"user_id={user_id}")
 
     return result
+
+async def mark_user_suspicious(db, user_id: int, reason: str):
+    row = await db.execute_fetchone(
+        "SELECT is_suspicious, suspicious_reason FROM users WHERE user_id = ?",
+        (user_id,),
+    )
+    if not row:
+        return
+
+    if row["is_suspicious"]:
+        old_reason = row["suspicious_reason"] or ""
+        if reason and reason not in old_reason:
+            new_reason = f"{old_reason}; {reason}" if old_reason else reason
+        else:
+            new_reason = old_reason
+    else:
+        new_reason = reason
+
+    await db.execute(
+        """
+        UPDATE users
+        SET is_suspicious = 1,
+            suspicious_reason = ?
+        WHERE user_id = ?
+        """,
+        (new_reason, user_id),
+    )
+    await db.commit()
+
+async def clear_user_suspicious(db, user_id: int):
+    await db.execute(
+        """
+        UPDATE users
+        SET is_suspicious = 0,
+            suspicious_reason = NULL
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    await db.commit()
+
+async def get_user_earnings_breakdown(db, user_id: int):
+    cursor = await db.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN type = 'task_reward' THEN delta ELSE 0 END), 0) AS tasks,
+            COALESCE(SUM(CASE WHEN type = 'contest_reward' THEN delta ELSE 0 END), 0) AS contests,
+            COALESCE(SUM(CASE WHEN type = 'daily_bonus' THEN delta ELSE 0 END), 0) AS daily_checkin,
+            COALESCE(SUM(CASE WHEN type = 'referral_bonus' THEN delta ELSE 0 END), 0) AS referrals,
+            COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS total_earned
+        FROM ledger
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    row = await cursor.fetchone()
+
+    tasks = row["tasks"] or 0
+    contests = row["contests"] or 0
+    daily_checkin = row["daily_checkin"] or 0
+    referrals = row["referrals"] or 0
+    total = row["total_earned"] or 0
+
+    def pct(value: int, total_value: int) -> int:
+        if total_value <= 0:
+            return 0
+        return round(value * 100 / total_value)
+
+    return {
+        "total": total,
+        "tasks": tasks,
+        "tasks_pct": pct(tasks, total),
+        "contests": contests,
+        "contests_pct": pct(contests, total),
+        "daily_checkin": daily_checkin,
+        "daily_checkin_pct": pct(daily_checkin, total),
+        "referrals": referrals,
+        "referrals_pct": pct(referrals, total),
+    }
+
+async def build_user_details_text(db, user_id: int) -> str:
+    cursor = await db.execute(
+        """
+        SELECT user_id, username, balance, is_suspicious, suspicious_reason
+        FROM users
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    user = await cursor.fetchone()
+
+    if not user:
+        return "❌ Пользователь не найден."
+
+    stats = await get_user_earnings_breakdown(db, user_id)
+
+    if user["is_suspicious"]:
+        suspicious_block = (
+            "⚠️ Подозрительный\n"
+            f"Причина: {user['suspicious_reason'] or '-'}"
+        )
+    else:
+        suspicious_block = "✅ Не подозрительный"
+
+    text = (
+        f"👤 Пользователь: {user['user_id']}\n"
+        f"Username: @{user['username'] or '-'}\n"
+        f"Баланс: {user['balance']}\n\n"
+        f"{suspicious_block}\n\n"
+        f"⭐ Всего заработано: {stats['total']}\n"
+        f"{stats['tasks']} ({stats['tasks_pct']}%) — задания\n"
+        f"{stats['contests']} ({stats['contests_pct']}%) — конкурсы\n"
+        f"{stats['daily_checkin']} ({stats['daily_checkin_pct']}%) — дейли чекин\n"
+        f"{stats['referrals']} ({stats['referrals_pct']}%) — рефералы"
+    )
+    return text

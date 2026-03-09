@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import CHANNEL_LINK
 
 def bottom_menu_kb() -> ReplyKeyboardMarkup:
@@ -186,3 +187,18 @@ def campaign_created_kb(key: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📋 Все конкурсы", callback_data="adm:list")],
         ]
     )
+
+def admin_user_details_kb(user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="👤 Детали пользователя", callback_data=f"adm:user:details:{user_id}")
+    builder.button(text="⬅️ Назад", callback_data="adm:users")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def admin_user_details_actions_kb(user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🚩 Пометить подозрительным", callback_data=f"adm:user:mark_susp:{user_id}")
+    builder.button(text="✅ Снять подозрение", callback_data=f"adm:user:clear_susp:{user_id}")
+    builder.button(text="⬅️ Назад", callback_data=f"adm:user:open:{user_id}")
+    builder.adjust(1)
+    return builder.as_markup()

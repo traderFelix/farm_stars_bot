@@ -30,7 +30,7 @@ from db import (
 
     # users/growth
     top_users_by_balance, users_total_count, users_new_since_hours, users_new_since_days, users_active_since_days,
-    users_growth_by_day,
+    users_growth_by_day, build_user_details_text, mark_user_suspicious, clear_user_suspicious,
 
     # ledger
     ledger_add, ledger_user_history, apply_balance_delta, get_balance, balances_audit,
@@ -41,7 +41,8 @@ from db import (
 
 from keyboards import (
     main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb,
-    campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb
+    campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb,
+    admin_user_details_actions_kb,
 )
 
 from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust
@@ -795,7 +796,15 @@ async def adm_audit_balances(callback: CallbackQuery, db):
     pending_withdrawn_sum = await pending_withdrawn_amount(db)
     claimed_from_ledger = await ledger_sum_by_reason(db, "claim")
 
-    lines = ["🧮 Сверка балансов", ""]
+    lines = [
+        "🧮 Сверка балансов\n",
+        f"Баланс пользователей: {fmt_stars(total_balances_sum)}⭐\n",
+        f"Получено в конкурсах (база): {fmt_stars(total_claimed_all)}⭐",
+        f"Получено в конкурсах (леджер): {fmt_stars(claimed_from_ledger)}⭐",
+        f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐",
+        f"Выведено: {fmt_stars(total_withdrawn_sum)}⭐",
+        f"В обработке: {fmt_stars(pending_withdrawn_sum)}⭐\n",
+    ]
 
     if not mismatches:
         lines.append("✅ Расхождений не найдено")
@@ -809,16 +818,58 @@ async def adm_audit_balances(callback: CallbackQuery, db):
                 f"user_id={user_id}: balance={fmt_stars(balance)}⭐ / ledger={fmt_stars(ledger_sum)}⭐"
             )
 
-    lines += [
-        f"\nБаланс пользователей: {fmt_stars(total_balances_sum)}⭐\n",
-        f"Получено в конкурсах (база): {fmt_stars(total_claimed_all)}⭐",
-        f"Получено в конкурсах (леджер): {fmt_stars(claimed_from_ledger)}⭐",
-        f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐",
-        f"Выведено: {fmt_stars(total_withdrawn_sum)}⭐",
-        f"В обработке: {fmt_stars(pending_withdrawn_sum)}⭐",
-    ]
-
     await callback.message.edit_text(
         "\n".join(lines),
         reply_markup=admin_back_kb(),
     )
+
+@router.callback_query(F.data.startswith("adm:user:details:"))
+async def adm_user_details(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    text = await build_user_details_text(db, user_id)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=admin_user_details_actions_kb(user_id),
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("adm:user:mark_susp:"))
+async def adm_user_mark_susp(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    await mark_user_suspicious(db, user_id, "Помечен администратором")
+    text = await build_user_details_text(db, user_id)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=admin_user_details_actions_kb(user_id),
+    )
+    await callback.answer("Пользователь помечен")
+
+
+@router.callback_query(F.data.startswith("adm:user:clear_susp:"))
+async def adm_user_clear_susp(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    await clear_user_suspicious(db, user_id)
+    text = await build_user_details_text(db, user_id)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=admin_user_details_actions_kb(user_id),
+    )
+    await callback.answer("Подозрение снято")
