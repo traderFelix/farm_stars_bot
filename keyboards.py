@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import CHANNEL_LINK
 
@@ -69,7 +69,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📊 Статистика конкурсов", callback_data="adm:stats_menu")],
             [InlineKeyboardButton(text="📈 Рост пользователей", callback_data="adm:growth_png")],
             [InlineKeyboardButton(text="📜 Леджер (последние)", callback_data="adm:ledger_last")],
-            [InlineKeyboardButton(text="🔎 Баланс пользователя", callback_data="adm:user_balance")],
+            [InlineKeyboardButton(text="🔎 Детали пользователя", callback_data="adm:user_balance")],
             [InlineKeyboardButton(text="🏆 Топ по балансу", callback_data="adm:top")],
             [InlineKeyboardButton(text="💸 Заявки на вывод", callback_data="adm:wd:list")],
             [InlineKeyboardButton(text="🧮 Сверка балансов", callback_data="adm:audit")],
@@ -96,12 +96,18 @@ def admin_withdraw_actions_kb(withdrawal_id: int):
         [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:wd:list")],
     ])
 
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 def admin_user_kb(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Начислить ⭐", callback_data=f"adm:ub:add:{user_id}")],
-        [InlineKeyboardButton(text="➖ Списать ⭐", callback_data=f"adm:ub:sub:{user_id}")],
-        [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")],
-    ])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статистика ⭐", callback_data=f"adm:user:details:{user_id}",)],
+            [InlineKeyboardButton(text="📜 Последние операции", callback_data=f"adm:user:ledger:{user_id}",)],
+            [InlineKeyboardButton(text="➕ Начислить ⭐", callback_data=f"adm:ub:add:{user_id}",)],
+            [InlineKeyboardButton(text="➖ Списать ⭐", callback_data=f"adm:ub:sub:{user_id}",)],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back",)],
+        ]
+    )
 
 def admin_back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

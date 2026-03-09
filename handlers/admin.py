@@ -521,32 +521,24 @@ async def adm_user_balance_show(message: Message, state: FSMContext, db):
         user_id = int(value)
     else:
         username = value.lstrip("@")
-        async with db.execute("SELECT user_id FROM users WHERE username = ? LIMIT 1", (username,)) as cur:
+        async with db.execute(
+                "SELECT user_id FROM users WHERE username = ? LIMIT 1",
+                (username,),
+        ) as cur:
             row = await cur.fetchone()
+
         if not row:
             await message.answer("❌ Пользователь не найден")
             return
+
         user_id = int(row[0])
 
-    balance = await get_balance(db, user_id)
-    history = await ledger_user_history(db, user_id)
-
-    lines = []
-    for r in history:
-        created_at, delta, reason, campaign_key = r[0], r[1], r[2], r[3]
-        ck = f" ({campaign_key})" if campaign_key else ""
-        lines.append(f"{created_at}: {float(delta):g}⭐ {reason}{ck}")
-
-    if not lines:
-        lines = ["нет операций"]
+    text = await build_user_details_text(db, user_id)
 
     await message.answer(
-        f"👤 User ID: {user_id}\n"
-        f"⭐ Баланс: {fmt_stars(balance)}\n\n"
-        f"📜 Последние операции:\n" + "\n".join(lines),
-        reply_markup=admin_user_kb(user_id)
+        text,
+        reply_markup=admin_user_kb(user_id),
     )
-
     await state.clear()
 
 
@@ -835,7 +827,7 @@ async def adm_user_details(callback: CallbackQuery, db):
 
     await callback.message.edit_text(
         text,
-        reply_markup=admin_user_details_actions_kb(user_id),
+        reply_markup=admin_user_kb(user_id),
     )
     await callback.answer()
 
@@ -873,3 +865,43 @@ async def adm_user_clear_susp(callback: CallbackQuery, db):
         reply_markup=admin_user_details_actions_kb(user_id),
     )
     await callback.answer("Подозрение снято")
+
+@router.callback_query(F.data.startswith("adm:user:ledger:"))
+async def adm_user_ledger(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    history = await ledger_user_history(db, user_id)
+
+    lines = []
+    for r in history:
+        created_at, delta, reason, campaign_key = r[0], r[1], r[2], r[3]
+        ck = f" ({campaign_key})" if campaign_key else ""
+        lines.append(f"{created_at}: {float(delta):g}⭐ {reason}{ck}")
+
+    if not lines:
+        lines = ["нет операций"]
+
+    text = (
+            f"📜 Последние операции\n\n"
+            + "\n".join(lines)
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅ Назад",
+                        callback_data=f"adm:user:details:{user_id}",
+                    )
+                ]
+            ]
+        ),
+    )
+    await callback.answer()
+

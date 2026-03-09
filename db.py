@@ -486,7 +486,7 @@ async def claim_reward(
             db,
             user_id=uid,
             delta=reward_amount,
-            reason="claim",
+            reason="contest_bonus",
             campaign_key=ck,
             meta=title,
         )
@@ -978,10 +978,11 @@ async def get_user_earnings_breakdown(db, user_id: int):
     cursor = await db.execute(
         """
         SELECT
-            COALESCE(SUM(CASE WHEN type = 'task_reward' THEN delta ELSE 0 END), 0) AS tasks,
-            COALESCE(SUM(CASE WHEN type = 'contest_reward' THEN delta ELSE 0 END), 0) AS contests,
-            COALESCE(SUM(CASE WHEN type = 'daily_bonus' THEN delta ELSE 0 END), 0) AS daily_checkin,
-            COALESCE(SUM(CASE WHEN type = 'referral_bonus' THEN delta ELSE 0 END), 0) AS referrals,
+            COALESCE(SUM(CASE WHEN reason = 'task_bonus' THEN delta ELSE 0 END), 0) AS task_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'contest_bonus' THEN delta ELSE 0 END), 0) AS contest_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'daily_bonus' THEN delta ELSE 0 END), 0) AS daily_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'referral_bonus' THEN delta ELSE 0 END), 0) AS referral_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'admin_adjust' THEN delta ELSE 0 END), 0) AS admin_adjust,
             COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS total_earned
         FROM ledger
         WHERE user_id = ?
@@ -990,10 +991,11 @@ async def get_user_earnings_breakdown(db, user_id: int):
     )
     row = await cursor.fetchone()
 
-    tasks = row["tasks"] or 0
-    contests = row["contests"] or 0
-    daily_checkin = row["daily_checkin"] or 0
-    referrals = row["referrals"] or 0
+    tasks = row["task_bonus"] or 0
+    contests = row["contest_bonus"] or 0
+    daily_checkin = row["daily_bonus"] or 0
+    referrals = row["referral_bonus"] or 0
+    admin_adjust = row["admin_adjust"] or 0
     total = row["total_earned"] or 0
 
     def pct(value: int, total_value: int) -> int:
@@ -1011,6 +1013,8 @@ async def get_user_earnings_breakdown(db, user_id: int):
         "daily_checkin_pct": pct(daily_checkin, total),
         "referrals": referrals,
         "referrals_pct": pct(referrals, total),
+        "admin_adjust": admin_adjust,
+        "admin_adjust_pct": pct(admin_adjust, total),
     }
 
 async def build_user_details_text(db, user_id: int) -> str:
@@ -1040,12 +1044,13 @@ async def build_user_details_text(db, user_id: int) -> str:
     text = (
         f"👤 Пользователь: {user['user_id']}\n"
         f"Username: @{user['username'] or '-'}\n"
-        f"Баланс: {user['balance']}\n\n"
+        f"Баланс: {user['balance']}⭐\n\n"
         f"{suspicious_block}\n\n"
-        f"⭐ Всего заработано: {stats['total']}\n"
+        f"Всего заработано: {stats['total']}⭐\n"
         f"{stats['tasks']} ({stats['tasks_pct']}%) — задания\n"
         f"{stats['contests']} ({stats['contests_pct']}%) — конкурсы\n"
         f"{stats['daily_checkin']} ({stats['daily_checkin_pct']}%) — дейли чекин\n"
-        f"{stats['referrals']} ({stats['referrals_pct']}%) — рефералы"
+        f"{stats['referrals']} ({stats['referrals_pct']}%) — рефералы\n"
+        f"{stats['admin_adjust']} ({stats['admin_adjust_pct']}%) — начисления от админа"
     )
     return text
