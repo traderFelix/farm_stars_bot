@@ -1031,26 +1031,30 @@ async def build_user_details_text(db, user_id: int) -> str:
     if not user:
         return "❌ Пользователь не найден."
 
-    stats = await get_user_earnings_breakdown(db, user_id)
-
     if user["is_suspicious"]:
         suspicious_block = (
-            "⚠️ Подозрительный\n"
+            f"⚠️ Подозрительный\n"
             f"Причина: {user['suspicious_reason'] or '-'}"
         )
     else:
         suspicious_block = "✅ Не подозрительный"
 
-    text = (
+    return (
         f"👤 Пользователь: {user['user_id']}\n"
         f"Username: @{user['username'] or '-'}\n"
-        f"Баланс: {user['balance']}⭐\n\n"
-        f"{suspicious_block}\n\n"
-        f"Всего заработано: {stats['total']}⭐\n"
-        f"{stats['tasks']} ({stats['tasks_pct']}%) — задания\n"
-        f"{stats['contests']} ({stats['contests_pct']}%) — конкурсы\n"
-        f"{stats['daily_checkin']} ({stats['daily_checkin_pct']}%) — дейли чекин\n"
-        f"{stats['referrals']} ({stats['referrals_pct']}%) — рефералы\n"
-        f"{stats['admin_adjust']} ({stats['admin_adjust_pct']}%) — начисления от админа"
+        f"Баланс: {fmt_stars(user['balance'])}⭐\n\n"
+        f"{suspicious_block}"
     )
-    return text
+
+async def build_user_stats_text(db, user_id: int) -> str:
+    stats = await get_user_earnings_breakdown(db, user_id)
+
+    return (
+        f"⭐ Всего заработано: {fmt_stars(stats['total'])}⭐\n"
+        f"{fmt_stars(stats['tasks'])} ({stats['tasks_pct']}%) — задания\n"
+        f"{fmt_stars(stats['contests'])} ({stats['contests_pct']}%) — конкурсы\n"
+        f"{fmt_stars(stats['daily_checkin'])} ({stats['daily_checkin_pct']}%) — дейли чекин\n"
+        f"{fmt_stars(stats['referrals'])} ({stats['referrals_pct']}%) — рефералы\n"
+        f"{fmt_stars(stats['admin_adjust'])} ({stats['admin_adjust_pct']}%) — начисления от админа"
+    )
+

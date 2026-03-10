@@ -1,6 +1,8 @@
 import io
 from datetime import date, timedelta
 
+from aiogram.exceptions import TelegramBadRequest
+
 import matplotlib
 matplotlib.use("Agg")  # важно для серверов без GUI
 
@@ -26,7 +28,7 @@ from db import (
     # stats
     campaign_stats, list_winners, claimed_usernames, global_claims_stats, campaigns_status_counts, total_balances,
     unclaimed_total_amount, total_assigned_amount, admin_balance_changes, total_withdrawn_amount, pending_withdrawn_amount,
-    ledger_sum_by_reason,
+    ledger_sum_by_reason, build_user_stats_text,
 
     # users/growth
     top_users_by_balance, users_total_count, users_new_since_hours, users_new_since_days, users_active_since_days,
@@ -42,7 +44,6 @@ from db import (
 from keyboards import (
     main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb,
     campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb,
-    admin_user_details_actions_kb,
 )
 
 from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust
@@ -825,10 +826,15 @@ async def adm_user_details(callback: CallbackQuery, db):
 
     text = await build_user_details_text(db, user_id)
 
-    await callback.message.edit_text(
-        text,
-        reply_markup=admin_user_kb(user_id),
-    )
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=admin_user_kb(user_id),
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+
     await callback.answer()
 
 @router.callback_query(F.data.startswith("adm:user:mark_susp:"))
@@ -844,7 +850,7 @@ async def adm_user_mark_susp(callback: CallbackQuery, db):
 
     await callback.message.edit_text(
         text,
-        reply_markup=admin_user_details_actions_kb(user_id),
+        reply_markup=admin_user_kb(user_id),
     )
     await callback.answer("Пользователь помечен")
 
@@ -862,7 +868,7 @@ async def adm_user_clear_susp(callback: CallbackQuery, db):
 
     await callback.message.edit_text(
         text,
-        reply_markup=admin_user_details_actions_kb(user_id),
+        reply_markup=admin_user_kb(user_id),
     )
     await callback.answer("Подозрение снято")
 
@@ -905,3 +911,32 @@ async def adm_user_ledger(callback: CallbackQuery, db):
     )
     await callback.answer()
 
+@router.callback_query(F.data.startswith("adm:user:stats:"))
+async def adm_user_stats(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    text = await build_user_stats_text(db, user_id)
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="⬅ Назад",
+                            callback_data=f"adm:user:details:{user_id}",
+                        )
+                    ]
+                ]
+            ),
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+
+    await callback.answer()

@@ -101,7 +101,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 def admin_user_kb(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📊 Статистика ⭐", callback_data=f"adm:user:details:{user_id}",)],
+            [InlineKeyboardButton(text="📊 Статистика ⭐", callback_data=f"adm:user:stats:{user_id}",)],
             [InlineKeyboardButton(text="📜 Последние операции", callback_data=f"adm:user:ledger:{user_id}",)],
             [InlineKeyboardButton(text="➕ Начислить ⭐", callback_data=f"adm:ub:add:{user_id}",)],
             [InlineKeyboardButton(text="➖ Списать ⭐", callback_data=f"adm:ub:sub:{user_id}",)],
@@ -198,13 +198,5 @@ def admin_user_details_kb(user_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="👤 Детали пользователя", callback_data=f"adm:user:details:{user_id}")
     builder.button(text="⬅️ Назад", callback_data="adm:users")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def admin_user_details_actions_kb(user_id: int) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🚩 Пометить подозрительным", callback_data=f"adm:user:mark_susp:{user_id}")
-    builder.button(text="✅ Снять подозрение", callback_data=f"adm:user:clear_susp:{user_id}")
-    builder.button(text="⬅️ Назад", callback_data=f"adm:user:open:{user_id}")
     builder.adjust(1)
     return builder.as_markup()
