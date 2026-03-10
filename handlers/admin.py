@@ -1,18 +1,18 @@
 import io
 from datetime import date, timedelta
 
-from aiogram.exceptions import TelegramBadRequest
-
 import matplotlib
 matplotlib.use("Agg")  # важно для серверов без GUI
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, TelegramObject, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Filter
+from aiogram.methods import RefundStarPayment
+from aiogram.exceptions import TelegramBadRequest
 
 from config import ADMIN_IDS
 
@@ -717,64 +717,120 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
     await _render_withdraw_card(callback, wid, db)
 
 
-@router.callback_query(F.data.startswith("adm:wd:reject:"))
-async def adm_withdraw_reject(callback: CallbackQuery, db):
-    await callback.answer()
-
-    wid = int(callback.data.split(":")[3])
-    admin_id = callback.from_user.id
-
-    row = await get_withdrawal(db, wid)
+async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tuple[bool, str]:
+    row = await db.fetchone(
+        """
+        SELECT user_id, fee_xtr, fee_paid, fee_refunded, fee_telegram_charge_id
+        FROM withdrawals
+        WHERE id = ?
+        """,
+        (withdrawal_id,)
+    )
     if not row:
-        await callback.answer("❌ Заявка не найдена", show_alert=True)
-        return
+        return False, "withdrawal_not_found"
 
-    _id, user_id, username, amount, method, details, status, created_at = (
-        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+    user_id = int(row["user_id"])
+    fee_xtr = int(row["fee_xtr"] or 0)
+    fee_paid = int(row["fee_paid"] or 0)
+    fee_refunded = int(row["fee_refunded"] or 0)
+    charge_id = row["fee_telegram_charge_id"]
+
+    if fee_xtr <= 0 or not fee_paid:
+        return True, "no_fee_paid"
+
+    if fee_refunded:
+        return True, "already_refunded"
+
+    if not charge_id:
+        return False, "missing_charge_id"
+
+    ok = await bot(
+        RefundStarPayment(
+            user_id=user_id,
+            telegram_payment_charge_id=charge_id,
+        )
     )
 
-    if status != "pending":
-        await callback.answer("⚠️ Уже обработана", show_alert=True)
+    if not ok:
+        return False, "refund_failed"
+
+    await db.execute(
+        """
+        UPDATE withdrawals
+        SET fee_refunded = 1
+        WHERE id = ?
+        """,
+        (withdrawal_id,)
+    )
+    await db.commit()
+
+    return True, "refunded"
+
+
+@router.callback_query(F.data.startswith("adm:wd:reject:"))
+async def adm_withdraw_reject(callback: CallbackQuery, db):
+    bot = callback.bot
+    withdrawal_id = int(callback.data.rsplit(":", 1)[1])
+
+    row = await db.fetchone(
+        "SELECT id, user_id, amount, status FROM withdrawals WHERE id = ?",
+        (withdrawal_id,)
+    )
+    if not row:
+        await callback.answer("Заявка не найдена", show_alert=True)
         return
+
+    if row["status"] != "pending":
+        await callback.answer("Заявка уже обработана", show_alert=True)
+        return
+
+    user_id = int(row["user_id"])
+    amount = float(row["amount"])
+
+    async with tx(db):
+        await db.execute(
+            "UPDATE withdrawals SET status = 'rejected' WHERE id = ?",
+            (withdrawal_id,)
+        )
+
+        await db.execute(
+            """
+            UPDATE users
+            SET balance = balance + ?
+            WHERE user_id = ?
+            """,
+            (amount, user_id)
+        )
+
+        await db.execute(
+            """
+            INSERT INTO ledger (user_id, delta, reason, withdrawal_id, meta)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, amount, "withdraw_revert", withdrawal_id, "rejected_by_admin")
+        )
+
+    refunded, refund_status = await refund_withdraw_fee_if_needed(bot, db, withdrawal_id)
+
+    user_text = (
+        f"❌ Заявка на вывод #{withdrawal_id} отклонена.\n"
+        f"⭐ {amount:g}⭐ возвращены на игровой баланс."
+    )
+
+    if refunded and refund_status in {"refunded", "already_refunded", "no_fee_paid"}:
+        if refund_status == "refunded":
+            user_text += "\n💳 Комиссия Telegram Stars возвращена."
+        elif refund_status == "already_refunded":
+            user_text += "\n💳 Комиссия Telegram Stars уже была возвращена."
+    else:
+        user_text += "\n⚠️ Комиссия Telegram Stars не вернулась автоматически. Администратор проверит это вручную."
 
     try:
-        async with tx(db):
-            row2 = await get_withdrawal(db, wid)
-            if not row2:
-                await callback.answer("❌ Заявка не найдена", show_alert=True)
-                return
+        await bot.send_message(user_id, user_text)
+    except Exception:
+        pass
 
-            status2 = row2[6]
-            if status2 != "pending":
-                await callback.answer("⚠️ Уже обработана", show_alert=True)
-                return
-
-            await set_withdrawal_status(db, wid, "rejected", admin_id)
-
-            await apply_balance_delta(
-                db,
-                user_id=int(user_id),
-                delta=float(amount),
-                reason="withdraw_release",
-                withdrawal_id=int(wid),
-                meta="rejected",
-            )
-
-        try:
-            await callback.bot.send_message(
-                int(user_id),
-                f"❌ Твоя заявка на вывод #{wid} отклонена.\n"
-                f"Сумма: {float(amount):g}⭐ возвращена на баланс."
-            )
-        except Exception:
-            pass
-
-    except Exception as e:
-        await callback.answer(f"❌ Ошибка: {type(e).__name__}: {e}", show_alert=True)
-        return
-
-    await callback.answer("✅ Отклонено и возвращено на баланс", show_alert=True)
-    await _render_withdraw_card(callback, wid, db)
+    await callback.answer("Заявка отклонена")
 
 
 @router.callback_query(F.data == "adm:audit")

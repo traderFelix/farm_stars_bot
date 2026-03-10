@@ -119,6 +119,11 @@ async def init_db(db: aiosqlite.Connection) -> None:
       created_at TEXT DEFAULT (datetime('now')),
       processed_at TEXT,
       processed_by INTEGER,
+      fee_xtr INTEGER NOT NULL DEFAULT 0,
+      fee_paid INTEGER NOT NULL DEFAULT 0,
+      fee_refunded INTEGER NOT NULL DEFAULT 0,
+      fee_telegram_charge_id TEXT,
+      fee_invoice_payload TEXT,
       FOREIGN KEY (user_id) REFERENCES users(user_id)
     );
 
@@ -181,6 +186,17 @@ async def register_user(
         """,
         (u, fn, ln, user_id),
     )
+
+async def ensure_user_registered(message_or_callback, db):
+    user = message_or_callback.from_user
+    async with tx(db, immediate=False):
+        await register_user(
+            db,
+            user.id,
+            user.username,
+            user.first_name,
+            user.last_name,
+        )
 
 async def get_balance(db: aiosqlite.Connection, user_id: int) -> float:
     async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cur:
