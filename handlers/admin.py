@@ -758,14 +758,7 @@ async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tup
     if not ok:
         return False, "refund_failed"
 
-    await mark_withdraw_fee_refunded(
-        """
-        UPDATE withdrawals
-        SET fee_refunded = 1
-        WHERE id = ?
-        """,
-        (withdrawal_id,)
-    )
+    await mark_withdraw_fee_refunded(db, withdrawal_id)
     await db.commit()
 
     return True, "refunded"
@@ -841,14 +834,7 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
                 )
 
                 if ok:
-                    await mark_withdraw_fee_refunded(
-                        """
-                        UPDATE withdrawals
-                        SET fee_refunded = 1
-                        WHERE id = ?
-                        """,
-                        (wid,),
-                    )
+                    await mark_withdraw_fee_refunded(db,wid)
                     await db.commit()
                     fee_refund_text = f"\nКомиссия {fee_xtr}⭐ возвращена."
                 else:
