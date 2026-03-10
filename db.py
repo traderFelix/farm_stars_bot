@@ -983,7 +983,9 @@ async def get_user_earnings_breakdown(db, user_id: int):
             COALESCE(SUM(CASE WHEN reason = 'daily_bonus' THEN delta ELSE 0 END), 0) AS daily_bonus,
             COALESCE(SUM(CASE WHEN reason = 'referral_bonus' THEN delta ELSE 0 END), 0) AS referral_bonus,
             COALESCE(SUM(CASE WHEN reason = 'admin_adjust' THEN delta ELSE 0 END), 0) AS admin_adjust,
-            COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS total_earned
+            COALESCE(SUM(CASE
+                WHEN reason NOT IN ('withdraw_hold', 'withdraw_paid', 'withdraw_release')
+                THEN delta ELSE 0 END), 0) AS total_earned
         FROM ledger
         WHERE user_id = ?
         """,
@@ -998,8 +1000,8 @@ async def get_user_earnings_breakdown(db, user_id: int):
     admin_adjust = row["admin_adjust"] or 0
     total = row["total_earned"] or 0
 
-    def pct(value: int, total_value: int) -> int:
-        if total_value <= 0:
+    def pct(value: float, total_value: float) -> int:
+        if total_value == 0:
             return 0
         return round(value * 100 / total_value)
 
