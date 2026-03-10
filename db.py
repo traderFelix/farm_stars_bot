@@ -40,16 +40,14 @@ async def tx(db: aiosqlite.Connection, immediate: bool = True):
             await db.execute(f'RELEASE SAVEPOINT "{sp_name}"')
             raise
     else:
-        lock = getattr(db, "_tx_lock", None)
-        if lock:
-            async with lock:
-                await db.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
-                try:
-                    yield
-                    await db.commit()
-                except Exception:
-                    await db.rollback()
-                    raise
+        async with db._tx_lock:  # type: ignore[attr-defined]
+            await db.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
+            try:
+                yield
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
 
 async def init_db(db: aiosqlite.Connection) -> None:
