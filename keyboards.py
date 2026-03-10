@@ -27,7 +27,7 @@ def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="🎁 Забрать награду", callback_data="claim")],
         [InlineKeyboardButton(text="📋 Задания", callback_data="tasks")],
-        [InlineKeyboardButton(text="💸 Вывод", callback_data="withdraw")],
+        [InlineKeyboardButton(text="👛 Вывод", callback_data="withdraw")],
     ]
     if is_admin:
         rows.append([InlineKeyboardButton(text="🛠 Админка", callback_data="adm:home")])
@@ -47,8 +47,8 @@ def withdraw_back_kb():
 
 def withdraw_method_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 TON", callback_data="withdraw:method:ton")],
-        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="withdraw:method:stars")],
+        [InlineKeyboardButton(text="⭐ Вывести звезды", callback_data="withdraw:method:stars")],
+        [InlineKeyboardButton(text="🔄 Обменять звезды на TON", callback_data="withdraw:method:ton")],
         [InlineKeyboardButton(text="⬅ Назад", callback_data="withdraw")],
     ])
 

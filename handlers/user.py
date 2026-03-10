@@ -2,14 +2,15 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.enums import ParseMode
 
-from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW
+from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENTAGE
 
 from db import (
     tx, fmt_stars,
     register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough,
     claim_reward, list_active_campaigns, log_abuse_event, count_recent_abuse_events, sum_recent_abuse_amount,
-    has_pending_withdrawal, user_created_hours_ago, wallet_used_by_another_user, wallet_users
+    has_pending_withdrawal, user_created_hours_ago, wallet_used_by_another_user, wallet_users, get_user_earnings_breakdown
 )
 
 from keyboards import (
@@ -21,6 +22,26 @@ from states import WithdrawCreate
 
 router = Router()
 
+WITHDRAW_TEXT = f"""
+💰 <b>Вывод и обмен звёзд</b>
+
+🔷 Минимальная сумма вывода и обмена <b>{MIN_WITHDRAW}⭐</b>
+🔷 Конвертация звёзд в TON производится по курсу на сайте <b>Fragment</b>
+🔷 Для вывода необходимо, чтобы минимум <b>{MIN_WITHDRAW_PERCENTAGE * 100:.0f}%</b> звезд на балансе были добыты путем выполнения заданий
+
+<blockquote>
+<b>Первый вывод бесплатный 🔥</b>
+
+Последующие выводы:
+▪️ 100⭐ — комиссия <b>5 Telegram Stars</b>
+▪️ 200⭐ — комиссия <b>3 Telegram Stars</b>
+▪️ 500⭐ — <b>без комиссии</b>
+
+💡 Комиссия списывается <b>только с баланса Telegram Stars</b>, а не с игрового баланса звёзд
+</blockquote>
+
+Выберите нужный вариант ниже! 👇
+"""
 
 def menu_text(balance: float) -> str:
     return "Чтобы получить больше ⭐️, выполняйте задания\n\n" + f"Баланс: {fmt_stars(balance)}⭐️"
@@ -206,11 +227,21 @@ async def withdraw_menu(callback: CallbackQuery, state: FSMContext, db):
     balance = await get_balance(db, user_id)
 
     await callback.message.edit_text(
-        "💸 Вывод средств\n\n"
-        f"Доступно: {fmt_stars(balance)}⭐\n"
-        f"Минимум: {MIN_WITHDRAW:g}⭐\n\n"
-        "Выбери действие:",
+        "Меню заявок на вывод\n\n"
+        f"Доступно: {fmt_stars(balance)}⭐",
         reply_markup=withdraw_menu_kb()
+    )
+
+
+@router.callback_query(F.data == "withdraw:new")
+async def withdraw_new(callback: CallbackQuery, state: FSMContext, db):
+    await callback.answer()
+    await state.clear()
+
+    await callback.message.edit_text(
+        WITHDRAW_TEXT,
+        parse_mode=ParseMode.HTML,
+        reply_markup=withdraw_method_kb()
     )
 
 
@@ -271,6 +302,22 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
     recent_withdraw_sum = await sum_recent_abuse_amount(db, user_id, "withdraw_create", 24)
     if recent_withdraw_sum + amount > 1000:
         await message.answer("🚫 Суточный лимит вывода превышен.")
+        return
+
+    earnings = await get_user_earnings_breakdown(db, user_id)
+
+    tasks = float(earnings.get("tasks", 0) or 0)
+    total = float(earnings.get("total", 0) or 0)
+
+    tasks_pct = tasks / total
+    if tasks_pct < MIN_WITHDRAW_PERCENTAGE:
+        await message.answer(
+            "🚫 Вывод пока недоступен\n\n"
+            f"Для вывода минимум {MIN_WITHDRAW_PERCENTAGE * 100:.0f}% всех полученных звёзд должны быть добыты через задания!\n\n"
+            f"• Всего получено: {total:.2f}⭐\n"
+            f"• Через задания: {tasks:.2f}⭐ ({tasks_pct * 100:.1f}%)\n"
+            f"• Требуется выполнить заданий еще на {total * MIN_WITHDRAW_PERCENTAGE:.2f}⭐"
+        )
         return
 
     await state.update_data(amount=amount)
@@ -451,19 +498,3 @@ async def withdraw_my(callback: CallbackQuery, db):
         reply_markup=withdraw_back_kb()
     )
 
-
-@router.callback_query(F.data == "withdraw:new")
-async def withdraw_new(callback: CallbackQuery, state: FSMContext, db):
-    await callback.answer()
-    await state.clear()
-
-    user_id = callback.from_user.id
-    balance = await get_balance(db, user_id)
-
-    await callback.message.edit_text(
-        "➕ Создать заявку на вывод\n\n"
-        f"Доступно: {fmt_stars(balance)}⭐\n"
-        f"Минимум: {MIN_WITHDRAW:g}⭐\n\n"
-        "Выбери способ вывода:",
-        reply_markup=withdraw_method_kb()
-    )
