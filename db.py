@@ -101,7 +101,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       delta NUMERIC NOT NULL,
-      reason TEXT NOT NULL,
+      reason TEXT NOT NULL,                    -- withdraw_hold | withdraw_paid | withdraw_release | admin_adjust | contest_bonus
       campaign_key TEXT,
       withdrawal_id INTEGER,
       meta TEXT,
@@ -113,8 +113,8 @@ async def init_db(db: aiosqlite.Connection) -> None:
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       amount NUMERIC NOT NULL,
-      method TEXT NOT NULL,            -- 'ton' | 'stars'
-      details TEXT,                    -- wallet address for TON
+      method TEXT NOT NULL,                    -- 'ton' | 'stars'
+      details TEXT,                            -- wallet address for TON
       status TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|rejected
       created_at TEXT DEFAULT (datetime('now')),
       processed_at TEXT,
@@ -125,7 +125,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE TABLE IF NOT EXISTS abuse_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    action TEXT NOT NULL,              -- claim_click | claim_fail | withdraw_create
+    action TEXT NOT NULL,                       -- claim_click | claim_fail | withdraw_create
     amount NUMERIC DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
     );
