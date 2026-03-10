@@ -210,3 +210,16 @@ def admin_fee_refund_kb():
             [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")],
         ]
     )
+
+def withdraw_stars_amount_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="100⭐", callback_data="withdraw:stars_amount:100"),
+            InlineKeyboardButton(text="200⭐", callback_data="withdraw:stars_amount:200"),
+            InlineKeyboardButton(text="500⭐", callback_data="withdraw:stars_amount:500"),
+            InlineKeyboardButton(text="1000⭐", callback_data="withdraw:stars_amount:1000"),
+        ],
+        [
+            InlineKeyboardButton(text="⬅ Назад", callback_data="withdraw:new"),
+        ],
+    ])

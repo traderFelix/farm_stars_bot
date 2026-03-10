@@ -1038,7 +1038,7 @@ async def adm_fee_refund_menu(callback: CallbackQuery, db):
 
     lines = ["↩️ Возврат комиссии\n", "Последние 10 оплат:\n"]
 
-    for i, row in enumerate(rows, start=1):
+    for i, row in enumerate(reversed(rows), start=1):
         withdrawal_id = row["withdrawal_id"]
         user_id = row["user_id"]
         username = row["username"]
@@ -1052,8 +1052,7 @@ async def adm_fee_refund_menu(callback: CallbackQuery, db):
         uname_line = f"@{username}" if username else "без username"
 
         lines.append(
-            f"{i}) {uname_line}\n"
-            f"withdrawal_id={withdrawal_id}\n"
+            f"wid={withdrawal_id} {uname_line}\n"
             f"fee={fee_xtr}⭐\n"
             f"status={status}\n"
             f"created_at={created_at}\n"

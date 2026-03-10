@@ -11,15 +11,14 @@ from aiogram.enums import ParseMode
 from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENTAGE
 
 from db import (
-    tx, fmt_stars,
+    sum_recent_abuse_amount, has_pending_withdrawal, user_created_hours_ago, get_user_earnings_breakdown,
     register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough,
-    claim_reward, list_active_campaigns, log_abuse_event, count_recent_abuse_events, sum_recent_abuse_amount,
-    has_pending_withdrawal, user_created_hours_ago, wallet_used_by_another_user, wallet_users, get_user_earnings_breakdown,
-    ensure_user_registered
+    claim_reward, list_active_campaigns, log_abuse_event, count_recent_abuse_events, tx, fmt_stars,
+    wallet_used_by_another_user, wallet_users, ensure_user_registered
 )
 
 from keyboards import (
-    subscribe_keyboard, main_menu, tasks_menu, bottom_menu_kb,
+    subscribe_keyboard, main_menu, tasks_menu, bottom_menu_kb, withdraw_stars_amount_kb,
     withdraw_method_kb, withdraw_menu_kb, withdraw_back_kb
 )
 
@@ -505,18 +504,96 @@ async def withdraw_choose_method(callback: CallbackQuery, state: FSMContext, db)
     user_id = callback.from_user.id
     balance = await get_balance(db, user_id)
 
+    await state.clear()
+    await state.update_data(method=method)
+
+    if method == "stars":
+        await callback.message.edit_text(
+            "Выбери сумму вывода ⭐:\n\n"
+            f"Доступно: {fmt_stars(balance)}⭐\n"
+            f"Минимум: {MIN_WITHDRAW:g}⭐",
+            reply_markup=withdraw_stars_amount_kb(),
+        )
+        return
+
+    await state.set_state(WithdrawCreate.amount)
     await callback.message.answer(
-        f"Введи сумму вывода ⭐ (число).\n"
+        f"Введи сумму обмена ⭐ в TON:\n"
         f"Доступно: {fmt_stars(balance)}⭐\n"
         f"Минимум: {MIN_WITHDRAW:g}⭐"
     )
 
 
+@router.callback_query(F.data.startswith("withdraw:stars_amount:"))
+async def withdraw_stars_fixed_amount(callback: CallbackQuery, state: FSMContext, db):
+    await callback.answer()
+
+    user_id = callback.from_user.id
+    amount = float(callback.data.split(":")[2])
+
+    await state.update_data(method="stars", amount=amount)
+
+    error_text = await validate_withdraw_rules(db, user_id, amount)
+    if error_text:
+        await callback.message.answer(error_text)
+        return
+
+    first_withdraw = await is_first_withdraw(db, user_id)
+    fee = get_withdraw_fee(amount, first_withdraw)
+
+    if fee <= 0:
+        try:
+            await finalize_withdraw_request(
+                message=callback.message,
+                db=db,
+                state=state,
+                user_id=user_id,
+                amount=amount,
+                method="stars",
+                details=None,
+                paid_fee=0,
+                fee_payment_charge_id=None,
+                fee_invoice_payload=None,
+            )
+        except Exception as e:
+            if isinstance(e, ValueError) and str(e) == "insufficient_balance":
+                await callback.message.answer("❌ Недостаточно звёзд на балансе")
+                return
+            await callback.message.answer(f"❌ Ошибка создания заявки: {type(e).__name__}: {e}")
+        return
+
+    await state.update_data(
+        amount=amount,
+        method="stars",
+        details=None,
+        withdraw_fee=fee,
+    )
+    await state.set_state(WithdrawCreate.fee_payment)
+
+    await callback.message.answer_invoice(
+        title="Комиссия за вывод",
+        description=f"Оплата комиссии {fee} Telegram Stars за вывод {amount:g}⭐",
+        payload=f"withdraw_fee:{user_id}",
+        currency="XTR",
+        prices=[LabeledPrice(label="Комиссия за вывод", amount=fee)],
+        provider_token="",
+        start_parameter=f"withdraw-fee-{user_id}",
+    )
+
+    await callback.message.answer(
+        f"Для продолжения оплати комиссию: {fee} Telegram Stars.\n"
+        "После успешной оплаты заявка создастся автоматически."
+    )
+
 @router.message(WithdrawCreate.amount)
 async def withdraw_enter_amount(message: Message, state: FSMContext, db):
-    user_id = message.from_user.id
     data = await state.get_data()
     method = data.get("method")
+
+    if method != "ton":
+        await state.clear()
+        await message.answer("❌ Для вывода в звёздах используй кнопки с фиксированной суммой.")
+        return
 
     try:
         amount = float(message.text.strip().replace(",", "."))
@@ -527,21 +604,8 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
         return
 
     await state.update_data(amount=amount)
-
-    if method == "ton":
-        await state.set_state(WithdrawCreate.details)
-        await message.answer("Введи TON-адрес кошелька для выплаты:")
-        return
-
-    await start_fee_payment_or_create(
-        message=message,
-        db=db,
-        state=state,
-        user_id=user_id,
-        amount=amount,
-        method="stars",
-        details=None,
-    )
+    await state.set_state(WithdrawCreate.details)
+    await message.answer("Введи TON-адрес кошелька для выплаты:")
 
 @router.message(WithdrawCreate.details)
 async def withdraw_enter_details(message: Message, state: FSMContext, db):
