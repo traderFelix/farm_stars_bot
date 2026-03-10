@@ -1076,3 +1076,61 @@ async def build_user_stats_text(db, user_id: int) -> str:
         f"{fmt_stars(stats['admin_adjust'])} ({stats['admin_adjust_pct']}%) — начисления от админа"
     )
 
+async def mark_withdraw_fee_refunded(db, withdrawal_id: int):
+    await db.execute(
+        """
+        UPDATE withdrawals
+        SET fee_refunded = 1
+        WHERE id = ?
+        """,
+        (withdrawal_id,),
+    )
+    await db.commit()
+
+async def list_recent_fee_payments(db, limit: int = 10):
+    cur = await db.execute(
+        """
+        SELECT
+            w.id AS withdrawal_id,
+            w.user_id,
+            u.username AS username,
+            w.fee_xtr,
+            w.fee_paid,
+            w.fee_refunded,
+            w.fee_telegram_charge_id,
+            w.created_at
+        FROM withdrawals w
+        LEFT JOIN users u ON u.user_id = w.user_id
+        WHERE w.fee_paid = 1
+          AND w.fee_telegram_charge_id IS NOT NULL
+          AND w.fee_telegram_charge_id != ''
+        ORDER BY w.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = await cur.fetchall()
+    await cur.close()
+    return rows
+
+
+async def find_withdraw_by_fee_charge_id(db, charge_id: str):
+    cur = await db.execute(
+        """
+        SELECT
+            w.id AS withdrawal_id,
+            w.user_id,
+            w.fee_xtr,
+            w.fee_paid,
+            w.fee_refunded,
+            w.fee_telegram_charge_id,
+            w.created_at
+        FROM withdrawals w
+        WHERE w.fee_telegram_charge_id = ?
+        LIMIT 1
+        """,
+        (charge_id,),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    return row

@@ -72,6 +72,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔎 Детали пользователя", callback_data="adm:user_balance")],
             [InlineKeyboardButton(text="🏆 Топ по балансу", callback_data="adm:top")],
             [InlineKeyboardButton(text="💸 Заявки на вывод", callback_data="adm:wd:list")],
+            [InlineKeyboardButton(text="↩️ Возврат комсы", callback_data="adm:fee_refund_menu")],
             [InlineKeyboardButton(text="🧮 Сверка балансов", callback_data="adm:audit")],
             [InlineKeyboardButton(text="⛔ Закрыть", callback_data="adm:close")],
         ]
@@ -200,3 +201,12 @@ def admin_user_details_kb(user_id: int) -> InlineKeyboardMarkup:
     builder.button(text="⬅️ Назад", callback_data="adm:users")
     builder.adjust(1)
     return builder.as_markup()
+
+
+def admin_fee_refund_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Вернуть вручную", callback_data="adm:fee_refund_manual")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")],
+        ]
+    )

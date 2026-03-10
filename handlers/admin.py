@@ -38,15 +38,16 @@ from db import (
     ledger_add, ledger_user_history, apply_balance_delta, get_balance, balances_audit,
 
     # withdraw
-    list_withdrawals, get_withdrawal, set_withdrawal_status,
+    list_withdrawals, get_withdrawal, set_withdrawal_status, mark_withdraw_fee_refunded, list_recent_fee_payments,
+    find_withdraw_by_fee_charge_id,
 )
 
 from keyboards import (
-    main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb,
+    main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, admin_fee_refund_kb,
     campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb,
 )
 
-from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust
+from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust, AdminRefundFee
 
 router = Router()
 
@@ -718,7 +719,7 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
 
 
 async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tuple[bool, str]:
-    row = await db.fetchone(
+    cur = await db.execute(
         """
         SELECT user_id, fee_xtr, fee_paid, fee_refunded, fee_telegram_charge_id
         FROM withdrawals
@@ -726,6 +727,9 @@ async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tup
         """,
         (withdrawal_id,)
     )
+    row = await cur.fetchone()
+    await cur.close()
+
     if not row:
         return False, "withdrawal_not_found"
 
@@ -754,7 +758,7 @@ async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tup
     if not ok:
         return False, "refund_failed"
 
-    await db.execute(
+    await mark_withdraw_fee_refunded(
         """
         UPDATE withdrawals
         SET fee_refunded = 1
@@ -771,6 +775,7 @@ async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tup
 async def adm_withdraw_reject(callback: CallbackQuery, db):
     wid = int(callback.data.split(":")[3])
     admin_id = callback.from_user.id
+    bot = callback.bot
 
     row = await get_withdrawal(db, wid)
     if not row:
@@ -807,11 +812,54 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
                 meta="rejected",
             )
 
+        # --- вернуть Telegram Stars комиссию, если она была оплачена ---
+        cur = await db.execute(
+            """
+            SELECT fee_xtr, fee_paid, fee_refunded, fee_telegram_charge_id
+            FROM withdrawals
+            WHERE id = ?
+            """,
+            (wid,),
+        )
+        fee_row = await cur.fetchone()
+        await cur.close()
+
+        fee_refund_text = ""
+
+        if fee_row:
+            fee_xtr = int(fee_row[0] or 0)
+            fee_paid = int(fee_row[1] or 0)
+            fee_refunded = int(fee_row[2] or 0)
+            charge_id = fee_row[3]
+
+            if fee_xtr > 0 and fee_paid and not fee_refunded and charge_id:
+                ok = await bot(
+                    RefundStarPayment(
+                        user_id=int(user_id),
+                        telegram_payment_charge_id=charge_id,
+                    )
+                )
+
+                if ok:
+                    await mark_withdraw_fee_refunded(
+                        """
+                        UPDATE withdrawals
+                        SET fee_refunded = 1
+                        WHERE id = ?
+                        """,
+                        (wid,),
+                    )
+                    await db.commit()
+                    fee_refund_text = f"\nКомиссия {fee_xtr}⭐ возвращена."
+                else:
+                    fee_refund_text = "\n⚠️ Комиссию вернуть не удалось."
+
         try:
             await callback.bot.send_message(
                 int(user_id),
                 f"❌ Твоя заявка на вывод #{wid} отклонена.\n"
                 f"Сумма: {float(amount):g}⭐ возвращена на баланс."
+                f"{fee_refund_text}"
             )
         except Exception:
             pass
@@ -987,3 +1035,106 @@ async def adm_user_stats(callback: CallbackQuery, db):
             raise
 
     await callback.answer()
+
+@router.callback_query(F.data == "adm:fee_refund_menu")
+async def adm_fee_refund_menu(callback: CallbackQuery, db):
+    await callback.answer()
+
+    rows = await list_recent_fee_payments(db, limit=10)
+
+    if not rows:
+        await callback.message.edit_text(
+            "↩️ Возврат комиссии\n\n"
+            "Пока нет последних оплат комиссии.",
+            reply_markup=admin_fee_refund_kb(),
+        )
+        return
+
+    lines = ["↩️ Возврат комиссии\n", "Последние 10 оплат:\n"]
+
+    for i, row in enumerate(rows, start=1):
+        withdrawal_id = row["withdrawal_id"]
+        user_id = row["user_id"]
+        username = row["username"]
+        fee_xtr = row["fee_xtr"]
+        fee_paid = int(row["fee_paid"] or 0)
+        fee_refunded = int(row["fee_refunded"] or 0)
+        charge_id = row["fee_telegram_charge_id"] or "-"
+        created_at = row["created_at"]
+
+        status = "возвращено" if fee_refunded else ("оплачено" if fee_paid else "не оплачено")
+        uname_line = f"@{username}" if username else "без username"
+
+        lines.append(
+            f"{i}) {uname_line}\n"
+            f"withdrawal_id={withdrawal_id}\n"
+            f"fee={fee_xtr}⭐\n"
+            f"status={status}\n"
+            f"created_at={created_at}\n"
+            f"{user_id} {charge_id}\n"
+        )
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=admin_fee_refund_kb(),
+    )
+
+@router.callback_query(F.data == "adm:fee_refund_manual")
+async def adm_fee_refund_manual(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(AdminRefundFee.waiting_manual_data)
+
+    await callback.message.answer(
+        "Введи параметры для возврата в таком формате:\n\n"
+        "user_id charge_id\n"
+        )
+
+@router.message(AdminRefundFee.waiting_manual_data)
+async def adm_fee_refund_manual_finish(message: Message, state: FSMContext, db):
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+
+    if len(parts) != 2:
+        await message.answer(
+            "❌ Неверный формат.\n\n"
+            "Нужно так:\n"
+            "user_id charge_id"
+        )
+        return
+
+    user_id_raw, charge_id = parts
+
+    try:
+        user_id = int(user_id_raw)
+    except ValueError:
+        await message.answer("❌ user_id должен быть числом.")
+        return
+
+    try:
+        ok = await message.bot(
+            RefundStarPayment(
+                user_id=user_id,
+                telegram_payment_charge_id=charge_id,
+            )
+        )
+    except TelegramBadRequest as e:
+        await message.answer(f"❌ TelegramBadRequest: {e}")
+        return
+    except Exception as e:
+        await message.answer(f"❌ Ошибка возврата: {type(e).__name__}: {e}")
+        return
+
+    if not ok:
+        await message.answer("❌ Telegram вернул неуспешный результат.")
+        return
+
+    row = await find_withdraw_by_fee_charge_id(db, charge_id)
+    if row and not int(row["fee_refunded"] or 0):
+        await mark_withdraw_fee_refunded(db, row["withdrawal_id"])
+
+    await state.clear()
+    await message.answer(
+        "✅ Комиссия успешно возвращена.\n"
+        f"user_id={user_id}\n"
+        f"charge_id={charge_id}"
+    )
