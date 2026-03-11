@@ -35,7 +35,7 @@ from db import (
     users_growth_by_day, build_user_details_text, mark_user_suspicious, clear_user_suspicious,
 
     # ledger
-    ledger_add, ledger_user_history, apply_balance_delta, get_balance, balances_audit,
+    ledger_add, ledger_user_history, apply_balance_delta, get_balance, balances_audit, xtr_ledger_add,
 
     # withdraw
     list_withdrawals, get_withdrawal, set_withdrawal_status, mark_withdraw_fee_refunded, list_recent_fee_payments,
@@ -759,6 +759,16 @@ async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tup
 
     await mark_withdraw_fee_refunded(db, withdrawal_id)
 
+    await xtr_ledger_add(
+        db,
+        user_id=int(user_id),
+        withdrawal_id=withdrawal_id,
+        delta_xtr=-int(fee_xtr),
+        reason="withdraw_fee_refunded",
+        telegram_payment_charge_id=charge_id,
+        meta="status=rejected",
+    )
+
     return True, "refunded"
 
 
@@ -803,39 +813,23 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
                 meta="rejected",
             )
 
-        # --- вернуть Telegram Stars комиссию, если она была оплачена ---
-        async with db.execute(
-            """
-            SELECT fee_xtr, fee_paid, fee_refunded, fee_telegram_charge_id
-            FROM withdrawals
-            WHERE id = ?
-            """,
-            (wid,),
-        ) as cur:
-            fee_row = await cur.fetchone()
-
         fee_refund_text = ""
 
-        if fee_row:
-            fee_xtr = int(fee_row[0] or 0)
-            fee_paid = int(fee_row[1] or 0)
-            fee_refunded = int(fee_row[2] or 0)
-            charge_id = fee_row[3]
+        refunded, refund_status = await refund_withdraw_fee_if_needed(bot, db, wid)
 
-            if fee_xtr > 0 and fee_paid and not fee_refunded and charge_id:
-                ok = await bot(
-                    RefundStarPayment(
-                        user_id=int(user_id),
-                        telegram_payment_charge_id=charge_id,
-                    )
-                )
+        if refund_status == "refunded":
+            fee_row = await get_withdrawal(db, wid)
+            fee_xtr = int(fee_row["fee_xtr"] or 0)
+            fee_refund_text = f"\nКомиссия {fee_xtr}⭐ возвращена."
 
-                if ok:
-                    await mark_withdraw_fee_refunded(db,wid)
-                    await db.commit()
-                    fee_refund_text = f"\nКомиссия {fee_xtr}⭐ возвращена."
-                else:
-                    fee_refund_text = "\n⚠️ Комиссию вернуть не удалось."
+        elif refund_status == "refund_failed":
+            fee_refund_text = "\n⚠️ Комиссию вернуть не удалось."
+
+        elif refund_status == "missing_charge_id":
+            fee_refund_text = "\n⚠️ У комиссии нет charge_id, вернуть автоматически не удалось."
+
+        elif refund_status == "withdrawal_not_found":
+            fee_refund_text = "\n⚠️ Заявка на вывод не найдена."
 
         try:
             await callback.bot.send_message(
@@ -865,7 +859,7 @@ async def adm_audit_balances(callback: CallbackQuery, db):
     admin_added, admin_removed = await admin_balance_changes(db)
     total_withdrawn_sum = await total_withdrawn_amount(db)
     pending_withdrawn_sum = await pending_withdrawn_amount(db)
-    claimed_from_ledger = await ledger_sum_by_reason(db, "claim")
+    claimed_from_ledger = await ledger_sum_by_reason(db, "contest_bonus")
 
     lines = [
         "🧮 Сверка балансов\n",
@@ -884,9 +878,19 @@ async def adm_audit_balances(callback: CallbackQuery, db):
         lines.append("")
         lines.append("Первые 10:")
         for row in mismatches[:10]:
-            user_id, balance, ledger_sum = row[0], row[1], row[2]
+            user_id = row["user_id"]
+            username = row["username"]
+            balance = row["users_balance"]
+            ledger_sum = row["ledger_sum"]
+            diff = row["diff"]
+
+            uname = f"@{username}" if username else "без username"
+
             lines.append(
-                f"user_id={user_id}: balance={fmt_stars(balance)}⭐ / ledger={fmt_stars(ledger_sum)}⭐"
+                f"user_id={user_id} ({uname}): "
+                f"balance={fmt_stars(balance)}⭐ / "
+                f"ledger={fmt_stars(ledger_sum)}⭐ / "
+                f"diff={fmt_stars(diff)}⭐"
             )
 
     await callback.message.edit_text(
@@ -1113,6 +1117,21 @@ async def adm_fee_refund_manual_finish(message: Message, state: FSMContext, db):
     row = await find_withdraw_by_fee_charge_id(db, charge_id)
     if row and not int(row["fee_refunded"] or 0):
         await mark_withdraw_fee_refunded(db, row["withdrawal_id"])
+
+        await xtr_ledger_add(
+            db,
+            user_id=int(row["user_id"]),
+            withdrawal_id=int(row["withdrawal_id"]),
+            delta_xtr=-int(row["fee_xtr"] or 0),
+            reason="withdraw_fee_refunded",
+            telegram_payment_charge_id=charge_id,
+            meta="status=manual_refund",
+        )
+    elif not row:
+        await message.answer(
+            "⚠️ Refund в Telegram выполнен, но заявка по charge_id не найдена. "
+            "В xtr_ledger запись не добавлена."
+        )
 
     await state.clear()
     await message.answer(
