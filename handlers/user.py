@@ -14,7 +14,7 @@ from db import (
     sum_recent_abuse_amount, has_pending_withdrawal, user_created_hours_ago, get_user_earnings_breakdown,
     register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough,
     claim_reward, list_active_campaigns, log_abuse_event, count_recent_abuse_events, tx, fmt_stars,
-    wallet_used_by_another_user, wallet_users, ensure_user_registered
+    wallet_used_by_another_user, wallet_users, ensure_user_registered, xtr_ledger_add
 )
 
 from keyboards import (
@@ -352,6 +352,18 @@ async def finalize_withdraw_request(
                 wid,
             )
         )
+
+        if paid_fee > 0:
+            await xtr_ledger_add(
+                db,
+                user_id=user_id,
+                withdrawal_id=wid,
+                delta_xtr=paid_fee,
+                reason="withdraw_fee_paid",
+                telegram_payment_charge_id=fee_payment_charge_id,
+                invoice_payload=fee_invoice_payload,
+                meta=f"method={method}",
+            )
 
         await log_abuse_event(db, user_id, "withdraw_create", amount=amount)
 

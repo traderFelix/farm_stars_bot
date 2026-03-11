@@ -128,11 +128,25 @@ async def init_db(db: aiosqlite.Connection) -> None:
     );
 
     CREATE TABLE IF NOT EXISTS abuse_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    action TEXT NOT NULL,                       -- claim_click | claim_fail | withdraw_create
-    amount NUMERIC DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      action TEXT NOT NULL,                       -- claim_click | claim_fail | withdraw_create
+      amount NUMERIC DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    
+    CREATE TABLE IF NOT EXISTS xtr_ledger (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      withdrawal_id INTEGER,
+      delta_xtr INTEGER NOT NULL,                  -- + списали комиссию / - вернули комиссию
+      reason TEXT NOT NULL,                        -- withdraw_fee_paid | withdraw_fee_refunded | admin_fee_refund
+      telegram_payment_charge_id TEXT,
+      invoice_payload TEXT,
+      meta TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(user_id),
+      FOREIGN KEY (withdrawal_id) REFERENCES withdrawals(id)
     );
     
     CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
@@ -145,6 +159,11 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_abuse_events_user_action_time ON abuse_events(user_id, action, created_at);
+    CREATE INDEX IF NOT EXISTS idx_xtr_ledger_user_created ON xtr_ledger(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_xtr_ledger_withdrawal ON xtr_ledger(withdrawal_id);
+    CREATE INDEX IF NOT EXISTS idx_xtr_ledger_reason_created ON xtr_ledger(reason, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_xtr_ledger_unique_paid_charge ON xtr_ledger(reason, telegram_payment_charge_id)
+      WHERE reason = 'withdraw_fee_paid' AND telegram_payment_charge_id IS NOT NULL;
     """)
     await db.commit()
 
@@ -1134,3 +1153,60 @@ async def find_withdraw_by_fee_charge_id(db, charge_id: str):
     row = await cur.fetchone()
     await cur.close()
     return row
+
+
+async def xtr_ledger_add(
+        db: aiosqlite.Connection,
+        user_id: int,
+        delta_xtr: int,
+        reason: str,
+        withdrawal_id: Optional[int] = None,
+        telegram_payment_charge_id: Optional[str] = None,
+        invoice_payload: Optional[str] = None,
+        meta: Optional[str] = None,
+) -> None:
+    await db.execute(
+        """
+        INSERT INTO xtr_ledger (
+            user_id,
+            withdrawal_id,
+            delta_xtr,
+            reason,
+            telegram_payment_charge_id,
+            invoice_payload,
+            meta,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (
+            int(user_id),
+            int(withdrawal_id) if withdrawal_id is not None else None,
+            int(delta_xtr),
+            reason,
+            telegram_payment_charge_id,
+            invoice_payload,
+            meta,
+        ),
+    )
+
+
+async def xtr_ledger_sum(db: aiosqlite.Connection) -> int:
+    async with db.execute(
+            "SELECT COALESCE(SUM(delta_xtr), 0) AS s FROM xtr_ledger"
+    ) as cur:
+        row = await cur.fetchone()
+        return int(row["s"] or 0)
+
+
+async def xtr_ledger_sum_by_reason(db: aiosqlite.Connection, reason: str) -> int:
+    async with db.execute(
+            """
+        SELECT COALESCE(SUM(delta_xtr), 0) AS s
+        FROM xtr_ledger
+        WHERE reason = ?
+        """,
+            (reason,),
+    ) as cur:
+        row = await cur.fetchone()
+        return int(row["s"] or 0)
