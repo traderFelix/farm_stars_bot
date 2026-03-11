@@ -20,3 +20,7 @@ class AdminAdjust(StatesGroup):
 class WithdrawCreate(StatesGroup):
     amount = State()
     details = State()
+    fee_payment = State()
+
+class AdminRefundFee(StatesGroup):
+    waiting_manual_data = State()

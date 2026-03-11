@@ -1,4 +1,5 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import CHANNEL_LINK
 
 def bottom_menu_kb() -> ReplyKeyboardMarkup:
@@ -26,7 +27,7 @@ def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="🎁 Забрать награду", callback_data="claim")],
         [InlineKeyboardButton(text="📋 Задания", callback_data="tasks")],
-        [InlineKeyboardButton(text="💸 Вывод", callback_data="withdraw")],
+        [InlineKeyboardButton(text="👛 Вывод", callback_data="withdraw")],
     ]
     if is_admin:
         rows.append([InlineKeyboardButton(text="🛠 Админка", callback_data="adm:home")])
@@ -46,8 +47,8 @@ def withdraw_back_kb():
 
 def withdraw_method_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 TON", callback_data="withdraw:method:ton")],
-        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="withdraw:method:stars")],
+        [InlineKeyboardButton(text="⭐ Вывести звезды", callback_data="withdraw:method:stars")],
+        [InlineKeyboardButton(text="🔄 Обменять звезды на TON", callback_data="withdraw:method:ton")],
         [InlineKeyboardButton(text="⬅ Назад", callback_data="withdraw")],
     ])
 
@@ -68,9 +69,10 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📊 Статистика конкурсов", callback_data="adm:stats_menu")],
             [InlineKeyboardButton(text="📈 Рост пользователей", callback_data="adm:growth_png")],
             [InlineKeyboardButton(text="📜 Леджер (последние)", callback_data="adm:ledger_last")],
-            [InlineKeyboardButton(text="🔎 Баланс пользователя", callback_data="adm:user_balance")],
+            [InlineKeyboardButton(text="🔎 Детали пользователя", callback_data="adm:user_balance")],
             [InlineKeyboardButton(text="🏆 Топ по балансу", callback_data="adm:top")],
             [InlineKeyboardButton(text="💸 Заявки на вывод", callback_data="adm:wd:list")],
+            [InlineKeyboardButton(text="↩️ Возврат комсы", callback_data="adm:fee_refund_menu")],
             [InlineKeyboardButton(text="🧮 Сверка балансов", callback_data="adm:audit")],
             [InlineKeyboardButton(text="⛔ Закрыть", callback_data="adm:close")],
         ]
@@ -95,12 +97,18 @@ def admin_withdraw_actions_kb(withdrawal_id: int):
         [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:wd:list")],
     ])
 
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 def admin_user_kb(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Начислить ⭐", callback_data=f"adm:ub:add:{user_id}")],
-        [InlineKeyboardButton(text="➖ Списать ⭐", callback_data=f"adm:ub:sub:{user_id}")],
-        [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")],
-    ])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статистика ⭐", callback_data=f"adm:user:stats:{user_id}",)],
+            [InlineKeyboardButton(text="📜 Последние операции", callback_data=f"adm:user:ledger:{user_id}",)],
+            [InlineKeyboardButton(text="➕ Начислить ⭐", callback_data=f"adm:ub:add:{user_id}",)],
+            [InlineKeyboardButton(text="➖ Списать ⭐", callback_data=f"adm:ub:sub:{user_id}",)],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back",)],
+        ]
+    )
 
 def admin_back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -186,3 +194,32 @@ def campaign_created_kb(key: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📋 Все конкурсы", callback_data="adm:list")],
         ]
     )
+
+def admin_user_details_kb(user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="👤 Детали пользователя", callback_data=f"adm:user:details:{user_id}")
+    builder.button(text="⬅️ Назад", callback_data="adm:users")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def admin_fee_refund_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Вернуть вручную", callback_data="adm:fee_refund_manual")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")],
+        ]
+    )
+
+def withdraw_stars_amount_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="100⭐", callback_data="withdraw:stars_amount:100"),
+            InlineKeyboardButton(text="200⭐", callback_data="withdraw:stars_amount:200"),
+            InlineKeyboardButton(text="500⭐", callback_data="withdraw:stars_amount:500"),
+            InlineKeyboardButton(text="1000⭐", callback_data="withdraw:stars_amount:1000"),
+        ],
+        [
+            InlineKeyboardButton(text="⬅ Назад", callback_data="withdraw:new"),
+        ],
+    ])

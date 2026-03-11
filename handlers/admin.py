@@ -7,10 +7,12 @@ matplotlib.use("Agg")  # важно для серверов без GUI
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, TelegramObject, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Filter
+from aiogram.methods import RefundStarPayment
+from aiogram.exceptions import TelegramBadRequest
 
 from config import ADMIN_IDS
 
@@ -26,25 +28,26 @@ from db import (
     # stats
     campaign_stats, list_winners, claimed_usernames, global_claims_stats, campaigns_status_counts, total_balances,
     unclaimed_total_amount, total_assigned_amount, admin_balance_changes, total_withdrawn_amount, pending_withdrawn_amount,
-    ledger_sum_by_reason,
+    ledger_sum_by_reason, build_user_stats_text,
 
     # users/growth
     top_users_by_balance, users_total_count, users_new_since_hours, users_new_since_days, users_active_since_days,
-    users_growth_by_day,
+    users_growth_by_day, build_user_details_text, mark_user_suspicious, clear_user_suspicious,
 
     # ledger
     ledger_add, ledger_user_history, apply_balance_delta, get_balance, balances_audit,
 
     # withdraw
-    list_withdrawals, get_withdrawal, set_withdrawal_status,
+    list_withdrawals, get_withdrawal, set_withdrawal_status, mark_withdraw_fee_refunded, list_recent_fee_payments,
+    find_withdraw_by_fee_charge_id,
 )
 
 from keyboards import (
-    main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb,
-    campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb
+    main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, admin_fee_refund_kb,
+    campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb,
 )
 
-from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust
+from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust, AdminRefundFee
 
 router = Router()
 
@@ -520,32 +523,24 @@ async def adm_user_balance_show(message: Message, state: FSMContext, db):
         user_id = int(value)
     else:
         username = value.lstrip("@")
-        async with db.execute("SELECT user_id FROM users WHERE username = ? LIMIT 1", (username,)) as cur:
+        async with db.execute(
+                "SELECT user_id FROM users WHERE username = ? LIMIT 1",
+                (username,),
+        ) as cur:
             row = await cur.fetchone()
+
         if not row:
             await message.answer("❌ Пользователь не найден")
             return
+
         user_id = int(row[0])
 
-    balance = await get_balance(db, user_id)
-    history = await ledger_user_history(db, user_id)
-
-    lines = []
-    for r in history:
-        created_at, delta, reason, campaign_key = r[0], r[1], r[2], r[3]
-        ck = f" ({campaign_key})" if campaign_key else ""
-        lines.append(f"{created_at}: {float(delta):g}⭐ {reason}{ck}")
-
-    if not lines:
-        lines = ["нет операций"]
+    text = await build_user_details_text(db, user_id)
 
     await message.answer(
-        f"👤 User ID: {user_id}\n"
-        f"⭐ Баланс: {fmt_stars(balance)}\n\n"
-        f"📜 Последние операции:\n" + "\n".join(lines),
-        reply_markup=admin_user_kb(user_id)
+        text,
+        reply_markup=admin_user_kb(user_id),
     )
-
     await state.clear()
 
 
@@ -630,12 +625,7 @@ async def adm_withdraw_list(callback: CallbackQuery, db):
     )
 
 
-@router.callback_query(F.data.startswith("adm:wd:open:"))
-async def adm_withdraw_open(callback: CallbackQuery, db):
-    await callback.answer()
-
-    wid = int(callback.data.split(":")[3])
-
+async def _render_withdraw_card(callback: CallbackQuery, wid: int, db):
     row = await get_withdrawal(db, wid)
     if not row:
         await callback.answer("❌ Заявка не найдена", show_alert=True)
@@ -658,6 +648,13 @@ async def adm_withdraw_open(callback: CallbackQuery, db):
         f"🕒 Создано: {created_at}",
         reply_markup=admin_withdraw_actions_kb(_id)
     )
+
+
+@router.callback_query(F.data.startswith("adm:wd:open:"))
+async def adm_withdraw_open(callback: CallbackQuery, db):
+    await callback.answer()
+    wid = int(callback.data.split(":")[3])
+    await _render_withdraw_card(callback, wid, db)
 
 
 @router.callback_query(F.data.startswith("adm:wd:paid:"))
@@ -718,15 +715,58 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
         return
 
     await callback.answer("✅ Отмечено как выплачено", show_alert=True)
-    await adm_withdraw_open(callback)
+    await _render_withdraw_card(callback, wid, db)
+
+
+async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tuple[bool, str]:
+    async with db.execute(
+        """
+        SELECT user_id, fee_xtr, fee_paid, fee_refunded, fee_telegram_charge_id
+        FROM withdrawals
+        WHERE id = ?
+        """,
+        (withdrawal_id,)
+    ) as cur:
+        row = await cur.fetchone()
+
+    if not row:
+        return False, "withdrawal_not_found"
+
+    user_id = int(row["user_id"])
+    fee_xtr = int(row["fee_xtr"] or 0)
+    fee_paid = int(row["fee_paid"] or 0)
+    fee_refunded = int(row["fee_refunded"] or 0)
+    charge_id = row["fee_telegram_charge_id"]
+
+    if fee_xtr <= 0 or not fee_paid:
+        return True, "no_fee_paid"
+
+    if fee_refunded:
+        return True, "already_refunded"
+
+    if not charge_id:
+        return False, "missing_charge_id"
+
+    ok = await bot(
+        RefundStarPayment(
+            user_id=user_id,
+            telegram_payment_charge_id=charge_id,
+        )
+    )
+
+    if not ok:
+        return False, "refund_failed"
+
+    await mark_withdraw_fee_refunded(db, withdrawal_id)
+
+    return True, "refunded"
 
 
 @router.callback_query(F.data.startswith("adm:wd:reject:"))
 async def adm_withdraw_reject(callback: CallbackQuery, db):
-    await callback.answer()
-
     wid = int(callback.data.split(":")[3])
     admin_id = callback.from_user.id
+    bot = callback.bot
 
     row = await get_withdrawal(db, wid)
     if not row:
@@ -754,7 +794,6 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
                 return
 
             await set_withdrawal_status(db, wid, "rejected", admin_id)
-
             await apply_balance_delta(
                 db,
                 user_id=int(user_id),
@@ -764,11 +803,46 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
                 meta="rejected",
             )
 
+        # --- вернуть Telegram Stars комиссию, если она была оплачена ---
+        async with db.execute(
+            """
+            SELECT fee_xtr, fee_paid, fee_refunded, fee_telegram_charge_id
+            FROM withdrawals
+            WHERE id = ?
+            """,
+            (wid,),
+        ) as cur:
+            fee_row = await cur.fetchone()
+
+        fee_refund_text = ""
+
+        if fee_row:
+            fee_xtr = int(fee_row[0] or 0)
+            fee_paid = int(fee_row[1] or 0)
+            fee_refunded = int(fee_row[2] or 0)
+            charge_id = fee_row[3]
+
+            if fee_xtr > 0 and fee_paid and not fee_refunded and charge_id:
+                ok = await bot(
+                    RefundStarPayment(
+                        user_id=int(user_id),
+                        telegram_payment_charge_id=charge_id,
+                    )
+                )
+
+                if ok:
+                    await mark_withdraw_fee_refunded(db,wid)
+                    await db.commit()
+                    fee_refund_text = f"\nКомиссия {fee_xtr}⭐ возвращена."
+                else:
+                    fee_refund_text = "\n⚠️ Комиссию вернуть не удалось."
+
         try:
             await callback.bot.send_message(
                 int(user_id),
                 f"❌ Твоя заявка на вывод #{wid} отклонена.\n"
                 f"Сумма: {float(amount):g}⭐ возвращена на баланс."
+                f"{fee_refund_text}"
             )
         except Exception:
             pass
@@ -777,8 +851,8 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
         await callback.answer(f"❌ Ошибка: {type(e).__name__}: {e}", show_alert=True)
         return
 
+    await _render_withdraw_card(callback, wid, db)
     await callback.answer("✅ Отклонено и возвращено на баланс", show_alert=True)
-    await adm_withdraw_open(callback)
 
 
 @router.callback_query(F.data == "adm:audit")
@@ -793,7 +867,15 @@ async def adm_audit_balances(callback: CallbackQuery, db):
     pending_withdrawn_sum = await pending_withdrawn_amount(db)
     claimed_from_ledger = await ledger_sum_by_reason(db, "claim")
 
-    lines = ["🧮 Сверка балансов", ""]
+    lines = [
+        "🧮 Сверка балансов\n",
+        f"Баланс пользователей: {fmt_stars(total_balances_sum)}⭐\n",
+        f"Получено в конкурсах (база): {fmt_stars(total_claimed_all)}⭐",
+        f"Получено в конкурсах (леджер): {fmt_stars(claimed_from_ledger)}⭐",
+        f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐",
+        f"Выведено: {fmt_stars(total_withdrawn_sum)}⭐",
+        f"В обработке: {fmt_stars(pending_withdrawn_sum)}⭐\n",
+    ]
 
     if not mismatches:
         lines.append("✅ Расхождений не найдено")
@@ -807,16 +889,234 @@ async def adm_audit_balances(callback: CallbackQuery, db):
                 f"user_id={user_id}: balance={fmt_stars(balance)}⭐ / ledger={fmt_stars(ledger_sum)}⭐"
             )
 
-    lines += [
-        f"\nБаланс пользователей: {fmt_stars(total_balances_sum)}⭐\n",
-        f"Получено в конкурсах (база): {fmt_stars(total_claimed_all)}⭐",
-        f"Получено в конкурсах (леджер): {fmt_stars(claimed_from_ledger)}⭐",
-        f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐",
-        f"Выведено: {fmt_stars(total_withdrawn_sum)}⭐",
-        f"В обработке: {fmt_stars(pending_withdrawn_sum)}⭐",
-    ]
-
     await callback.message.edit_text(
         "\n".join(lines),
         reply_markup=admin_back_kb(),
+    )
+
+@router.callback_query(F.data.startswith("adm:user:details:"))
+async def adm_user_details(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    text = await build_user_details_text(db, user_id)
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=admin_user_kb(user_id),
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("adm:user:mark_susp:"))
+async def adm_user_mark_susp(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    await mark_user_suspicious(db, user_id, "Помечен администратором")
+    text = await build_user_details_text(db, user_id)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=admin_user_kb(user_id),
+    )
+    await callback.answer("Пользователь помечен")
+
+
+@router.callback_query(F.data.startswith("adm:user:clear_susp:"))
+async def adm_user_clear_susp(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    await clear_user_suspicious(db, user_id)
+    text = await build_user_details_text(db, user_id)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=admin_user_kb(user_id),
+    )
+    await callback.answer("Подозрение снято")
+
+@router.callback_query(F.data.startswith("adm:user:ledger:"))
+async def adm_user_ledger(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    history = await ledger_user_history(db, user_id)
+
+    lines = []
+    for r in history:
+        created_at, delta, reason, campaign_key = r[0], r[1], r[2], r[3]
+        ck = f" ({campaign_key})" if campaign_key else ""
+        lines.append(f"{created_at}: {float(delta):g}⭐ {reason}{ck}")
+
+    if not lines:
+        lines = ["нет операций"]
+
+    text = (
+            f"📜 Последние операции\n\n"
+            + "\n".join(lines)
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅ Назад",
+                        callback_data=f"adm:user:details:{user_id}",
+                    )
+                ]
+            ]
+        ),
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("adm:user:stats:"))
+async def adm_user_stats(callback: CallbackQuery, db):
+    try:
+        user_id = int(callback.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный user_id", show_alert=True)
+        return
+
+    text = await build_user_stats_text(db, user_id)
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="⬅ Назад",
+                            callback_data=f"adm:user:details:{user_id}",
+                        )
+                    ]
+                ]
+            ),
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+
+    await callback.answer()
+
+@router.callback_query(F.data == "adm:fee_refund_menu")
+async def adm_fee_refund_menu(callback: CallbackQuery, db):
+    await callback.answer()
+
+    rows = await list_recent_fee_payments(db, limit=10)
+
+    if not rows:
+        await callback.message.edit_text(
+            "↩️ Возврат комиссии\n\n"
+            "Пока нет последних оплат комиссии.",
+            reply_markup=admin_fee_refund_kb(),
+        )
+        return
+
+    lines = ["↩️ Возврат комиссии\n", "Последние 10 оплат:\n"]
+
+    for i, row in enumerate(reversed(rows), start=1):
+        withdrawal_id = row["withdrawal_id"]
+        user_id = row["user_id"]
+        username = row["username"]
+        fee_xtr = row["fee_xtr"]
+        fee_paid = int(row["fee_paid"] or 0)
+        fee_refunded = int(row["fee_refunded"] or 0)
+        charge_id = row["fee_telegram_charge_id"] or "-"
+        created_at = row["created_at"]
+
+        status = "возвращено" if fee_refunded else ("оплачено" if fee_paid else "не оплачено")
+        uname_line = f"@{username}" if username else "без username"
+
+        lines.append(
+            f"wid={withdrawal_id} {uname_line}\n"
+            f"fee={fee_xtr}⭐\n"
+            f"status={status}\n"
+            f"created_at={created_at}\n"
+            f"{user_id} {charge_id}\n"
+        )
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=admin_fee_refund_kb(),
+    )
+
+@router.callback_query(F.data == "adm:fee_refund_manual")
+async def adm_fee_refund_manual(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(AdminRefundFee.waiting_manual_data)
+
+    await callback.message.answer(
+        "Введи параметры для возврата в таком формате:\n\n"
+        "user_id charge_id\n"
+        )
+
+@router.message(AdminRefundFee.waiting_manual_data)
+async def adm_fee_refund_manual_finish(message: Message, state: FSMContext, db):
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+
+    if len(parts) != 2:
+        await message.answer(
+            "❌ Неверный формат.\n\n"
+            "Нужно так:\n"
+            "user_id charge_id"
+        )
+        return
+
+    user_id_raw, charge_id = parts
+
+    try:
+        user_id = int(user_id_raw)
+    except ValueError:
+        await message.answer("❌ user_id должен быть числом.")
+        return
+
+    try:
+        ok = await message.bot(
+            RefundStarPayment(
+                user_id=user_id,
+                telegram_payment_charge_id=charge_id,
+            )
+        )
+    except TelegramBadRequest as e:
+        await message.answer(f"❌ TelegramBadRequest: {e}")
+        return
+    except Exception as e:
+        await message.answer(f"❌ Ошибка возврата: {type(e).__name__}: {e}")
+        return
+
+    if not ok:
+        await message.answer("❌ Telegram вернул неуспешный результат.")
+        return
+
+    row = await find_withdraw_by_fee_charge_id(db, charge_id)
+    if row and not int(row["fee_refunded"] or 0):
+        await mark_withdraw_fee_refunded(db, row["withdrawal_id"])
+
+    await state.clear()
+    await message.answer(
+        "✅ Комиссия успешно возвращена.\n"
+        f"user_id={user_id}\n"
+        f"charge_id={charge_id}"
     )

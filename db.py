@@ -40,7 +40,7 @@ async def tx(db: aiosqlite.Connection, immediate: bool = True):
             await db.execute(f'RELEASE SAVEPOINT "{sp_name}"')
             raise
     else:
-        async with db._tx_lock:
+        async with db._tx_lock:  # type: ignore[attr-defined]
             await db.execute("BEGIN IMMEDIATE;" if immediate else "BEGIN;")
             try:
                 yield
@@ -58,6 +58,8 @@ async def init_db(db: aiosqlite.Connection) -> None:
       tg_first_name TEXT,
       tg_last_name TEXT,
       balance NUMERIC DEFAULT 0 CHECK(balance >= 0),
+      is_suspicious INTEGER NOT NULL DEFAULT 0,
+      suspicious_reason TEXT,
       is_banned INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       last_seen_at TEXT DEFAULT (datetime('now'))
@@ -99,7 +101,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       delta NUMERIC NOT NULL,
-      reason TEXT NOT NULL,
+      reason TEXT NOT NULL,                    -- withdraw_hold | withdraw_paid | withdraw_release | admin_adjust | contest_bonus
       campaign_key TEXT,
       withdrawal_id INTEGER,
       meta TEXT,
@@ -111,15 +113,28 @@ async def init_db(db: aiosqlite.Connection) -> None:
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       amount NUMERIC NOT NULL,
-      method TEXT NOT NULL,            -- 'ton' | 'stars'
-      details TEXT,                    -- wallet address for TON
+      method TEXT NOT NULL,                    -- 'ton' | 'stars'
+      details TEXT,                            -- wallet address for TON
       status TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|rejected
       created_at TEXT DEFAULT (datetime('now')),
       processed_at TEXT,
       processed_by INTEGER,
+      fee_xtr INTEGER NOT NULL DEFAULT 0,
+      fee_paid INTEGER NOT NULL DEFAULT 0,
+      fee_refunded INTEGER NOT NULL DEFAULT 0,
+      fee_telegram_charge_id TEXT,
+      fee_invoice_payload TEXT,
       FOREIGN KEY (user_id) REFERENCES users(user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS abuse_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    action TEXT NOT NULL,                       -- claim_click | claim_fail | withdraw_create
+    amount NUMERIC DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+    );
+    
     CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
     CREATE INDEX IF NOT EXISTS idx_users_last_seen_at ON users(last_seen_at);
     CREATE INDEX IF NOT EXISTS idx_campaigns_status_created ON campaigns(status, created_at);
@@ -129,6 +144,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_ledger_withdrawal ON ledger(withdrawal_id);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_abuse_events_user_action_time ON abuse_events(user_id, action, created_at);
     """)
     await db.commit()
 
@@ -170,6 +186,17 @@ async def register_user(
         """,
         (u, fn, ln, user_id),
     )
+
+async def ensure_user_registered(message_or_callback, db):
+    user = message_or_callback.from_user
+    async with tx(db, immediate=False):
+        await register_user(
+            db,
+            user.id,
+            user.username,
+            user.first_name,
+            user.last_name,
+        )
 
 async def get_balance(db: aiosqlite.Connection, user_id: int) -> float:
     async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cur:
@@ -475,7 +502,7 @@ async def claim_reward(
             db,
             user_id=uid,
             delta=reward_amount,
-            reason="claim",
+            reason="contest_bonus",
             campaign_key=ck,
             meta=title,
         )
@@ -796,3 +823,314 @@ async def ledger_sum_by_reason(db: aiosqlite.Connection, reason: str) -> float:
     async with db.execute(query, (reason,)) as cur:
         row = await cur.fetchone()
         return float(row[0] or 0)
+
+
+async def cleanup_abuse_events(db: aiosqlite.Connection) -> None:
+    await db.execute("""
+        DELETE FROM abuse_events
+        WHERE datetime(created_at) < datetime('now', '-1 day')
+    """)
+
+
+async def log_abuse_event(db, user_id: int, action: str, amount: float = 0):
+    await cleanup_abuse_events(db)
+
+    await db.execute(
+        """
+        INSERT INTO abuse_events (user_id, action, amount)
+        VALUES (?, ?, ?)
+        """,
+        (int(user_id), action, float(amount)),
+    )
+
+
+async def count_recent_abuse_events(
+        db: aiosqlite.Connection,
+        user_id: int,
+        action: str,
+        minutes: int,
+) -> int:
+    async with db.execute(
+            """
+        SELECT COUNT(*)
+        FROM abuse_events
+        WHERE user_id = ?
+          AND action = ?
+          AND datetime(created_at) >= datetime('now', ?)
+        """,
+            (int(user_id), action, f"-{int(minutes)} minutes"),
+    ) as cur:
+        row = await cur.fetchone()
+        return int(row[0] or 0)
+
+
+async def sum_recent_abuse_amount(
+        db: aiosqlite.Connection,
+        user_id: int,
+        action: str,
+        hours: int,
+) -> float:
+    async with db.execute(
+            """
+        SELECT COALESCE(SUM(amount), 0)
+        FROM abuse_events
+        WHERE user_id = ?
+          AND action = ?
+          AND datetime(created_at) >= datetime('now', ?)
+        """,
+            (int(user_id), action, f"-{int(hours)} hours"),
+    ) as cur:
+        row = await cur.fetchone()
+        return float(row[0] or 0.0)
+
+
+async def has_pending_withdrawal(db: aiosqlite.Connection, user_id: int) -> bool:
+    async with db.execute(
+            """
+        SELECT 1
+        FROM withdrawals
+        WHERE user_id = ?
+          AND status = 'pending'
+        LIMIT 1
+        """,
+            (int(user_id),),
+    ) as cur:
+        return await cur.fetchone() is not None
+
+
+async def user_created_hours_ago(db: aiosqlite.Connection, user_id: int) -> float:
+    async with db.execute(
+            """
+        SELECT COALESCE((julianday('now') - julianday(created_at)) * 24.0, 0)
+        FROM users
+        WHERE user_id = ?
+        """,
+            (int(user_id),),
+    ) as cur:
+        row = await cur.fetchone()
+        return float(row[0] or 0.0)
+
+async def wallet_used_by_another_user(
+        db: aiosqlite.Connection,
+        user_id: int,
+        details: str,
+) -> bool:
+    async with db.execute(
+            """
+        SELECT 1
+        FROM withdrawals
+        WHERE method = 'ton'
+          AND details = ?
+          AND user_id != ?
+        LIMIT 1
+        """,
+            (details.strip(), int(user_id)),
+    ) as cur:
+        return await cur.fetchone() is not None
+
+async def wallet_users(db, details: str) -> list[str]:
+    async with db.execute(
+            """
+        SELECT DISTINCT w.user_id, u.username
+        FROM withdrawals w
+        LEFT JOIN users u ON u.user_id = w.user_id
+        WHERE w.details = ?
+        ORDER BY w.user_id ASC
+        """,
+            (details.strip(),)
+    ) as cur:
+        rows = await cur.fetchall()
+
+    result = []
+    for user_id, username in rows:
+        if username:
+            result.append(f"@{username}")
+        else:
+            result.append(f"user_id={user_id}")
+
+    return result
+
+async def mark_user_suspicious(db, user_id: int, reason: str):
+    row = await db.execute_fetchone(
+        "SELECT is_suspicious, suspicious_reason FROM users WHERE user_id = ?",
+        (user_id,),
+    )
+    if not row:
+        return
+
+    if row["is_suspicious"]:
+        old_reason = row["suspicious_reason"] or ""
+        if reason and reason not in old_reason:
+            new_reason = f"{old_reason}; {reason}" if old_reason else reason
+        else:
+            new_reason = old_reason
+    else:
+        new_reason = reason
+
+    await db.execute(
+        """
+        UPDATE users
+        SET is_suspicious = 1,
+            suspicious_reason = ?
+        WHERE user_id = ?
+        """,
+        (new_reason, user_id),
+    )
+    await db.commit()
+
+async def clear_user_suspicious(db, user_id: int):
+    await db.execute(
+        """
+        UPDATE users
+        SET is_suspicious = 0,
+            suspicious_reason = NULL
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    await db.commit()
+
+async def get_user_earnings_breakdown(db, user_id: int):
+    cursor = await db.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN reason = 'task_bonus' THEN delta ELSE 0 END), 0) AS task_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'contest_bonus' THEN delta ELSE 0 END), 0) AS contest_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'daily_bonus' THEN delta ELSE 0 END), 0) AS daily_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'referral_bonus' THEN delta ELSE 0 END), 0) AS referral_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'admin_adjust' THEN delta ELSE 0 END), 0) AS admin_adjust,
+            COALESCE(SUM(CASE
+                WHEN reason NOT IN ('withdraw_hold', 'withdraw_paid', 'withdraw_release')
+                THEN delta ELSE 0 END), 0) AS total_earned
+        FROM ledger
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    row = await cursor.fetchone()
+
+    tasks = row["task_bonus"] or 0
+    contests = row["contest_bonus"] or 0
+    daily_checkin = row["daily_bonus"] or 0
+    referrals = row["referral_bonus"] or 0
+    admin_adjust = row["admin_adjust"] or 0
+    total = row["total_earned"] or 0
+
+    def pct(value: float, total_value: float) -> int:
+        if total_value == 0:
+            return 0
+        return round(value * 100 / total_value)
+
+    return {
+        "total": total,
+        "tasks": tasks,
+        "tasks_pct": pct(tasks, total),
+        "contests": contests,
+        "contests_pct": pct(contests, total),
+        "daily_checkin": daily_checkin,
+        "daily_checkin_pct": pct(daily_checkin, total),
+        "referrals": referrals,
+        "referrals_pct": pct(referrals, total),
+        "admin_adjust": admin_adjust,
+        "admin_adjust_pct": pct(admin_adjust, total),
+    }
+
+async def build_user_details_text(db, user_id: int) -> str:
+    cursor = await db.execute(
+        """
+        SELECT user_id, username, balance, is_suspicious, suspicious_reason
+        FROM users
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    user = await cursor.fetchone()
+
+    if not user:
+        return "❌ Пользователь не найден."
+
+    if user["is_suspicious"]:
+        suspicious_block = (
+            f"⚠️ Подозрительный\n"
+            f"Причина: {user['suspicious_reason'] or '-'}"
+        )
+    else:
+        suspicious_block = "✅ Не подозрительный"
+
+    return (
+        f"👤 Пользователь: {user['user_id']}\n"
+        f"Username: @{user['username'] or '-'}\n"
+        f"Баланс: {fmt_stars(user['balance'])}⭐\n\n"
+        f"{suspicious_block}"
+    )
+
+async def build_user_stats_text(db, user_id: int) -> str:
+    stats = await get_user_earnings_breakdown(db, user_id)
+
+    return (
+        f"⭐ Всего заработано: {fmt_stars(stats['total'])}⭐\n"
+        f"{fmt_stars(stats['tasks'])} ({stats['tasks_pct']}%) — задания\n"
+        f"{fmt_stars(stats['contests'])} ({stats['contests_pct']}%) — конкурсы\n"
+        f"{fmt_stars(stats['daily_checkin'])} ({stats['daily_checkin_pct']}%) — дейли чекин\n"
+        f"{fmt_stars(stats['referrals'])} ({stats['referrals_pct']}%) — рефералы\n"
+        f"{fmt_stars(stats['admin_adjust'])} ({stats['admin_adjust_pct']}%) — начисления от админа"
+    )
+
+async def mark_withdraw_fee_refunded(db, withdrawal_id: int):
+    await db.execute(
+        """
+        UPDATE withdrawals
+        SET fee_refunded = 1
+        WHERE id = ?
+        """,
+        (withdrawal_id,),
+    )
+    await db.commit()
+
+async def list_recent_fee_payments(db, limit: int = 10):
+    cur = await db.execute(
+        """
+        SELECT
+            w.id AS withdrawal_id,
+            w.user_id,
+            u.username AS username,
+            w.fee_xtr,
+            w.fee_paid,
+            w.fee_refunded,
+            w.fee_telegram_charge_id,
+            w.created_at
+        FROM withdrawals w
+        LEFT JOIN users u ON u.user_id = w.user_id
+        WHERE w.fee_paid = 1
+          AND w.fee_telegram_charge_id IS NOT NULL
+          AND w.fee_telegram_charge_id != ''
+        ORDER BY w.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = await cur.fetchall()
+    await cur.close()
+    return rows
+
+
+async def find_withdraw_by_fee_charge_id(db, charge_id: str):
+    cur = await db.execute(
+        """
+        SELECT
+            w.id AS withdrawal_id,
+            w.user_id,
+            w.fee_xtr,
+            w.fee_paid,
+            w.fee_refunded,
+            w.fee_telegram_charge_id,
+            w.created_at
+        FROM withdrawals w
+        WHERE w.fee_telegram_charge_id = ?
+        LIMIT 1
+        """,
+        (charge_id,),
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    return row
