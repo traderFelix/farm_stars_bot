@@ -159,8 +159,6 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_abuse_events_user_action_time ON abuse_events(user_id, action, created_at);
-    CREATE INDEX IF NOT EXISTS idx_xtr_ledger_user_created ON xtr_ledger(user_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_xtr_ledger_withdrawal ON xtr_ledger(withdrawal_id);
     CREATE INDEX IF NOT EXISTS idx_xtr_ledger_reason_created ON xtr_ledger(reason, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_xtr_ledger_unique_paid_charge ON xtr_ledger(reason, telegram_payment_charge_id)
       WHERE reason = 'withdraw_fee_paid' AND telegram_payment_charge_id IS NOT NULL;

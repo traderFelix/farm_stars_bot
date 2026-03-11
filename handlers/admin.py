@@ -813,50 +813,23 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
                 meta="rejected",
             )
 
-        # --- вернуть Telegram Stars комиссию, если она была оплачена ---
-        async with db.execute(
-            """
-            SELECT fee_xtr, fee_paid, fee_refunded, fee_telegram_charge_id
-            FROM withdrawals
-            WHERE id = ?
-            """,
-            (wid,),
-        ) as cur:
-            fee_row = await cur.fetchone()
-
         fee_refund_text = ""
 
-        if fee_row:
-            fee_xtr = int(fee_row[0] or 0)
-            fee_paid = int(fee_row[1] or 0)
-            fee_refunded = int(fee_row[2] or 0)
-            charge_id = fee_row[3]
+        refunded, refund_status = await refund_withdraw_fee_if_needed(bot, db, wid)
 
-            if fee_xtr > 0 and fee_paid and not fee_refunded and charge_id:
-                ok = await bot(
-                    RefundStarPayment(
-                        user_id=int(user_id),
-                        telegram_payment_charge_id=charge_id,
-                    )
-                )
+        if refund_status == "refunded":
+            fee_row = await get_withdrawal(db, wid)
+            fee_xtr = int(fee_row["fee_xtr"] or 0)
+            fee_refund_text = f"\nКомиссия {fee_xtr}⭐ возвращена."
 
-                # запись возврата комиссии
-                await xtr_ledger_add(
-                    db,
-                    user_id=int(user_id),
-                    withdrawal_id=wid,
-                    delta_xtr=-int(fee_xtr),
-                    reason="withdraw_fee_refunded",
-                    telegram_payment_charge_id=charge_id,
-                    meta="status=rejected",
-                )
+        elif refund_status == "refund_failed":
+            fee_refund_text = "\n⚠️ Комиссию вернуть не удалось."
 
-                if ok:
-                    await mark_withdraw_fee_refunded(db,wid)
-                    await db.commit()
-                    fee_refund_text = f"\nКомиссия {fee_xtr}⭐ возвращена."
-                else:
-                    fee_refund_text = "\n⚠️ Комиссию вернуть не удалось."
+        elif refund_status == "missing_charge_id":
+            fee_refund_text = "\n⚠️ У комиссии нет charge_id, вернуть автоматически не удалось."
+
+        elif refund_status == "withdrawal_not_found":
+            fee_refund_text = "\n⚠️ Заявка на вывод не найдена."
 
         try:
             await callback.bot.send_message(
