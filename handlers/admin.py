@@ -719,16 +719,15 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
 
 
 async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tuple[bool, str]:
-    cur = await db.execute(
+    async with db.execute(
         """
         SELECT user_id, fee_xtr, fee_paid, fee_refunded, fee_telegram_charge_id
         FROM withdrawals
         WHERE id = ?
         """,
         (withdrawal_id,)
-    )
-    row = await cur.fetchone()
-    await cur.close()
+    ) as cur:
+        row = await cur.fetchone()
 
     if not row:
         return False, "withdrawal_not_found"
@@ -759,7 +758,6 @@ async def refund_withdraw_fee_if_needed(bot: Bot, db, withdrawal_id: int) -> tup
         return False, "refund_failed"
 
     await mark_withdraw_fee_refunded(db, withdrawal_id)
-    await db.commit()
 
     return True, "refunded"
 
@@ -806,16 +804,15 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
             )
 
         # --- вернуть Telegram Stars комиссию, если она была оплачена ---
-        cur = await db.execute(
+        async with db.execute(
             """
             SELECT fee_xtr, fee_paid, fee_refunded, fee_telegram_charge_id
             FROM withdrawals
             WHERE id = ?
             """,
             (wid,),
-        )
-        fee_row = await cur.fetchone()
-        await cur.close()
+        ) as cur:
+            fee_row = await cur.fetchone()
 
         fee_refund_text = ""
 
