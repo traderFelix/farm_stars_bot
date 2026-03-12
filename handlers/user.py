@@ -270,7 +270,7 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
             db=db,
             user_id=user_id,
             delta=reward,
-            reason="view_post_reward",
+            reason="view_post_bonus",
             meta=f"task_post:{task_post_id}:channel_post:{channel_post_id}",
         )
 
