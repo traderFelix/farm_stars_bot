@@ -684,19 +684,6 @@ async def ledger_sum(db: aiosqlite.Connection, user_id: int) -> float:
         row = await cur.fetchone()
     return float(row["s"] or 0.0)
 
-async def ledger_user_history(db: aiosqlite.Connection, user_id: int, limit: int = 20):
-    async with db.execute(
-            """
-        SELECT created_at, delta, reason, campaign_key
-        FROM ledger
-        WHERE user_id = ?
-        ORDER BY datetime(created_at) DESC
-        LIMIT ?
-        """,
-            (int(user_id), int(limit)),
-    ) as cur:
-        return await cur.fetchall()
-
 async def create_withdrawal(db: aiosqlite.Connection, user_id: int, amount: float, method: str, details: Optional[str] = None) -> int:
     cur = await db.execute(
         """

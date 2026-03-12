@@ -14,7 +14,7 @@ from aiogram.filters import Filter
 from aiogram.methods import RefundStarPayment
 from aiogram.exceptions import TelegramBadRequest
 
-from config import ADMIN_IDS
+from config import ADMIN_IDS, LEDGER_PAGE_SIZE
 
 from handlers.user import menu_text, is_admin
 
@@ -35,7 +35,7 @@ from db import (
     users_growth_by_day, build_user_details_text, mark_user_suspicious, clear_user_suspicious,
 
     # ledger
-    ledger_add, ledger_user_history, apply_balance_delta, get_balance, balances_audit, xtr_ledger_add,
+    ledger_add, apply_balance_delta, get_balance, balances_audit, xtr_ledger_add,
 
     # withdraw
     list_withdrawals, get_withdrawal, set_withdrawal_status, mark_withdraw_fee_refunded, list_recent_fee_payments,
@@ -67,6 +67,63 @@ class AdminOnly(Filter):
 
 router.message.filter(AdminOnly())
 router.callback_query.filter(AdminOnly())
+
+
+def _admin_ledger_nav_kb(page: int, has_next: bool) -> InlineKeyboardMarkup:
+    row = []
+    if page > 0:
+        row.append(
+            InlineKeyboardButton(
+                text="⬅ Пред",
+                callback_data=f"adm:ledger_last:{page - 1}",
+            )
+        )
+    if has_next:
+        row.append(
+            InlineKeyboardButton(
+                text="След ➡",
+                callback_data=f"adm:ledger_last:{page + 1}",
+            )
+        )
+
+    keyboard = []
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([
+        InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def _user_ledger_nav_kb(user_id: int, page: int, has_next: bool) -> InlineKeyboardMarkup:
+    row = []
+    if page > 0:
+        row.append(
+            InlineKeyboardButton(
+                text="⬅ Пред",
+                callback_data=f"adm:user:ledger:{user_id}:{page - 1}",
+            )
+        )
+    if has_next:
+        row.append(
+            InlineKeyboardButton(
+                text="След ➡",
+                callback_data=f"adm:user:ledger:{user_id}:{page + 1}",
+            )
+        )
+
+    keyboard = []
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([
+        InlineKeyboardButton(
+            text="⬅ Назад",
+            callback_data=f"adm:user:details:{user_id}",
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 async def _render_campaign_card(callback: CallbackQuery, key: str, db):
@@ -483,36 +540,61 @@ async def adm_growth_png(callback: CallbackQuery, db):
     )
 
 
-@router.callback_query(F.data == "adm:ledger_last")
+@router.callback_query(F.data.startswith("adm:ledger_last"))
 async def adm_ledger_last(callback: CallbackQuery, db):
     await callback.answer()
+
+    parts = (callback.data or "").split(":")
+    page = 0
+    if len(parts) >= 3:
+        try:
+            page = max(int(parts[2]), 0)
+        except ValueError:
+            page = 0
+
+    offset = page * LEDGER_PAGE_SIZE
 
     async with db.execute(
             """
         SELECT l.created_at, u.username, l.delta, l.reason, l.campaign_key
         FROM ledger l
         LEFT JOIN users u ON u.user_id = l.user_id
-        ORDER BY datetime(l.created_at) DESC
-        LIMIT 30
-        """
+        ORDER BY datetime(l.created_at) DESC, l.id DESC
+        LIMIT ? OFFSET ?
+        """,
+            (LEDGER_PAGE_SIZE + 1, offset),
     ) as cur:
         rows = await cur.fetchall()
 
-    if not rows:
-        await callback.message.edit_text("📜 Леджер пуст.", reply_markup=admin_back_kb())
+    if not rows and page == 0:
+        await callback.message.edit_text(
+            "📜 Леджер пуст.",
+            reply_markup=admin_back_kb()
+        )
         return
 
+    if not rows and page > 0:
+        await callback.answer("Дальше записей нет")
+        return
+
+    has_next = len(rows) > LEDGER_PAGE_SIZE
+    rows = rows[:LEDGER_PAGE_SIZE]
+
     lines = []
-    for r in rows:
-        created_at, username, delta, reason, campaign_key = r[0], r[1], r[2], r[3], r[4]
+    start_n = offset + 1
+
+    for i, r in enumerate(rows, start=start_n):
+        created_at, username, delta, reason, campaign_key = r
         name = f"@{username}" if username else "(no-username)"
         ck = f" [{campaign_key}]" if campaign_key else ""
-        lines.append(f"{created_at} — {name}: {float(delta):g}⭐ — {reason}{ck}")
+        lines.append(
+            f"{i}. {created_at} — {name}: {float(delta):g}⭐ — {reason}{ck}"
+        )
 
     await callback.message.edit_text(
-        "📜 Последние 30 операций:\n\n" + "\n".join(lines),
-        reply_markup=admin_back_kb()
-    )
+        f"📜 Леджер, страница {page + 1}:\n\n" + "\n".join(lines),
+        reply_markup=_admin_ledger_nav_kb(page, has_next),
+        )
 
 
 @router.callback_query(F.data == "adm:user_balance")
@@ -963,40 +1045,61 @@ async def adm_user_clear_susp(callback: CallbackQuery, db):
 
 @router.callback_query(F.data.startswith("adm:user:ledger:"))
 async def adm_user_ledger(callback: CallbackQuery, db):
+    parts = (callback.data or "").split(":")
+
     try:
-        user_id = int(callback.data.split(":")[-1])
+        user_id = int(parts[3])
     except (ValueError, IndexError):
         await callback.answer("Некорректный user_id", show_alert=True)
         return
 
-    history = await ledger_user_history(db, user_id)
+    page = 0
+    if len(parts) >= 5:
+        try:
+            page = max(int(parts[4]), 0)
+        except ValueError:
+            page = 0
+
+    offset = page * LEDGER_PAGE_SIZE
+
+    async with db.execute(
+            """
+        SELECT created_at, delta, reason, campaign_key
+        FROM ledger
+        WHERE user_id = ?
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT ? OFFSET ?
+        """,
+            (user_id, LEDGER_PAGE_SIZE + 1, offset),
+    ) as cur:
+        history = await cur.fetchall()
+
+    if not history and page > 0:
+        await callback.answer("Дальше записей нет")
+        return
+
+    has_next = len(history) > LEDGER_PAGE_SIZE
+    history = history[:LEDGER_PAGE_SIZE]
 
     lines = []
-    for r in history:
-        created_at, delta, reason, campaign_key = r[0], r[1], r[2], r[3]
+    start_n = offset + 1
+
+    for i, r in enumerate(history, start=start_n):
+        created_at, delta, reason, campaign_key = r
         ck = f" ({campaign_key})" if campaign_key else ""
-        lines.append(f"{created_at}: {float(delta):g}⭐ {reason}{ck}")
+        lines.append(f"{i}. {created_at}: {float(delta):g}⭐ {reason}{ck}")
 
     if not lines:
         lines = ["нет операций"]
 
     text = (
-            f"📜 Последние операции\n\n"
+            f"📜 Операции пользователя, страница {page + 1}\n\n"
             + "\n".join(lines)
     )
 
     await callback.message.edit_text(
         text,
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="⬅ Назад",
-                        callback_data=f"adm:user:details:{user_id}",
-                    )
-                ]
-            ]
-        ),
+        reply_markup=_user_ledger_nav_kb(user_id, page, has_next),
     )
     await callback.answer()
 
