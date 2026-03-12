@@ -10,3 +10,4 @@ ADMIN_IDS = set(map(int, os.getenv("ADMIN_IDS", "").split(",")))\
 DB_PATH = "bot.db"
 MIN_WITHDRAW = 100.0
 MIN_WITHDRAW_PERCENTAGE = 0.25
+LEDGER_PAGE_SIZE = 20
