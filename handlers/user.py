@@ -11,7 +11,7 @@ from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, PreCheckoutQuery, LabeledPrice
 )
 
-from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENTAGE, VIEW_POST_SECONDS
+from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENTAGE
 
 from db import (
     sum_recent_abuse_amount, has_pending_withdrawal, user_created_hours_ago, get_user_earnings_breakdown,
@@ -183,17 +183,19 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
     async with tx(db, immediate=False):
         await ensure_user_registered(callback, db)
 
-    recent_clicks = await count_recent_abuse_events(db, user_id, "task_view_click", 1)
-    if recent_clicks >= 60 / VIEW_POST_SECONDS:
-        await callback.answer("⏳ Слишком часто. Попробуй через минуту.", show_alert=True)
-        return
-
-    await log_abuse_event(db, user_id, "task_view_click")
-
     row = await get_next_task_post_for_user(db, user_id)
     if not row:
         await callback.answer("❌ Доступных постов пока нет.", show_alert=True)
         return
+
+    view_seconds = int(row["view_seconds"])
+
+    recent_clicks = await count_recent_abuse_events(db, user_id, "task_view_click", 1)
+    if recent_clicks >= 60 / view_seconds:
+        await callback.answer("⏳ Слишком часто. Попробуй через минуту.", show_alert=True)
+        return
+
+    await log_abuse_event(db, user_id, "task_view_click")
 
     task_post_id = int(row["id"])
     from_chat_id = row["chat_id"]
@@ -223,7 +225,7 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
         )
         return
 
-    await asyncio.sleep(VIEW_POST_SECONDS)
+    await asyncio.sleep(view_seconds)
 
     try:
         await bot.delete_message(chat_id=user_id, message_id=sent.message_id)

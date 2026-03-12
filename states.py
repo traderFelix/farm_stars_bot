@@ -29,7 +29,9 @@ class TaskChannelCreate(StatesGroup):
     chat_id = State()
     total_bought_views = State()
     views_per_post = State()
+    view_seconds = State()
 
 class TaskChannelEdit(StatesGroup):
     total_bought_views = State()
     views_per_post = State()
+    view_seconds = State()

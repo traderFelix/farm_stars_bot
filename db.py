@@ -156,6 +156,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
         is_active INTEGER NOT NULL DEFAULT 1,
         total_bought_views INTEGER NOT NULL DEFAULT 0,
         views_per_post INTEGER NOT NULL DEFAULT 0,
+        view_seconds INTEGER NOT NULL DEFAULT 3,
         allocated_views INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
     );
@@ -1258,6 +1259,7 @@ async def list_task_channels(db: aiosqlite.Connection):
             is_active,
             total_bought_views,
             views_per_post,
+            view_seconds,
             allocated_views,
             (total_bought_views - allocated_views) AS remaining_views,
             created_at
@@ -1278,6 +1280,7 @@ async def get_task_channel(db: aiosqlite.Connection, channel_id: int):
             is_active,
             total_bought_views,
             views_per_post,
+            view_seconds,
             allocated_views,
             (total_bought_views - allocated_views) AS remaining_views,
             created_at
@@ -1300,6 +1303,7 @@ async def get_task_channel_by_chat_id(db: aiosqlite.Connection, chat_id: str):
             is_active,
             total_bought_views,
             views_per_post,
+            view_seconds,
             allocated_views,
             (total_bought_views - allocated_views) AS remaining_views,
             created_at
@@ -1318,19 +1322,21 @@ async def create_task_channel(
         title: Optional[str],
         total_bought_views: int,
         views_per_post: int,
+        view_seconds: int,
 ) -> int:
     cur = await db.execute(
         """
         INSERT INTO task_channels (
-            chat_id, title, is_active, total_bought_views, views_per_post, allocated_views, created_at
+            chat_id, title, is_active, total_bought_views, views_per_post, view_seconds, allocated_views, created_at
         )
-        VALUES (?, ?, 1, ?, ?, 0, datetime('now'))
+        VALUES (?, ?, 1, ?, ?, ?, 0, datetime('now'))
         """,
         (
             str(chat_id),
             title,
             int(total_bought_views),
             int(views_per_post),
+            int(view_seconds),
         ),
     )
     return int(cur.lastrowid)
@@ -1433,6 +1439,7 @@ async def get_next_task_post_for_user(db: aiosqlite.Connection, user_id: int):
             p.id,
             p.channel_id,
             c.chat_id,
+            c.view_seconds,
             p.channel_post_id,
             p.reward,
             p.required_views,
@@ -1467,6 +1474,7 @@ async def get_specific_task_post_for_user(
             p.id,
             p.channel_id,
             c.chat_id,
+            c.view_seconds,
             p.channel_post_id,
             p.reward,
             p.required_views,
@@ -1549,18 +1557,21 @@ async def update_task_channel_params(
         channel_id: int,
         total_bought_views: int,
         views_per_post: int,
+        view_seconds: int,
 ) -> None:
     await db.execute(
         """
         UPDATE task_channels
         SET
             total_bought_views = ?,
-            views_per_post = ?
+            views_per_post = ?,
+            view_seconds = ?
         WHERE id = ?
         """,
         (
             int(total_bought_views),
             int(views_per_post),
+            int(view_seconds),
             int(channel_id),
         ),
     )
