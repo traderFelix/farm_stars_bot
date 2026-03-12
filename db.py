@@ -1365,10 +1365,12 @@ async def allocate_task_post_from_channel_post(
     views_per_post = int(channel["views_per_post"] or 0)
 
     if remaining <= 0 or views_per_post <= 0:
+        await auto_disable_task_channel_if_exhausted(db, int(channel["id"]))
         return False
 
     alloc = min(remaining, views_per_post)
     if alloc <= 0:
+        await auto_disable_task_channel_if_exhausted(db, int(channel["id"]))
         return False
 
     cur = await db.execute(
@@ -1399,6 +1401,8 @@ async def allocate_task_post_from_channel_post(
         """,
         (int(alloc), title, int(channel["id"])),
     )
+
+    await auto_disable_task_channel_if_exhausted(db, int(channel["id"]))
     return True
 
 
@@ -1407,9 +1411,7 @@ async def count_available_task_posts_for_user(db: aiosqlite.Connection, user_id:
             """
         SELECT COUNT(*)
         FROM task_posts p
-        JOIN task_channels c ON c.id = p.channel_id
         WHERE p.is_active = 1
-          AND c.is_active = 1
           AND p.current_views < p.required_views
           AND NOT EXISTS (
               SELECT 1
@@ -1439,7 +1441,6 @@ async def get_next_task_post_for_user(db: aiosqlite.Connection, user_id: int):
         FROM task_posts p
         JOIN task_channels c ON c.id = p.channel_id
         WHERE p.is_active = 1
-          AND c.is_active = 1
           AND p.current_views < p.required_views
           AND NOT EXISTS (
               SELECT 1
@@ -1475,7 +1476,6 @@ async def get_specific_task_post_for_user(
         JOIN task_channels c ON c.id = p.channel_id
         WHERE p.id = ?
           AND p.is_active = 1
-          AND c.is_active = 1
           AND p.current_views < p.required_views
           AND NOT EXISTS (
               SELECT 1
@@ -1597,3 +1597,19 @@ async def list_task_posts_by_channel(db: aiosqlite.Connection, channel_id: int, 
             (int(channel_id), int(limit)),
     ) as cur:
         return await cur.fetchall()
+
+async def auto_disable_task_channel_if_exhausted(
+        db: aiosqlite.Connection,
+        channel_id: int,
+) -> bool:
+    cur = await db.execute(
+        """
+        UPDATE task_channels
+        SET is_active = 0
+        WHERE id = ?
+          AND is_active = 1
+          AND allocated_views >= total_bought_views
+        """,
+        (int(channel_id),),
+    )
+    return cur.rowcount == 1

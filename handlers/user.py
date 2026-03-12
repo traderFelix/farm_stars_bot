@@ -203,15 +203,23 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
     await callback.answer("Показываю пост...")
 
     try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    try:
         sent = await bot.forward_message(
             chat_id=user_id,
             from_chat_id=from_chat_id,
             message_id=channel_post_id,
         )
     except TelegramBadRequest:
-        await callback.message.answer(
-            "❌ Не удалось показать пост.\n"
-            "Проверь, что бот есть в канале и видит этот пост."
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                "❌ Не удалось показать пост.\n"
+                "Проверь, что бот есть в канале и видит этот пост."
+            )
         )
         return
 
@@ -225,9 +233,12 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
     async with tx(db, immediate=True):
         current_row = await get_specific_task_post_for_user(db, user_id, task_post_id)
         if not current_row:
-            await callback.message.answer(
-                "⚠️ Этот пост уже стал недоступен.\n"
-                "Попробуй открыть следующий.",
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "⚠️ Этот пост уже стал недоступен.\n"
+                    "Попробуй открыть следующий."
+                ),
                 reply_markup=task_after_view_kb()
             )
             return
@@ -239,13 +250,21 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
             reward=reward,
         )
         if not inserted:
-            await callback.message.answer(
-                "✅ Этот пост уже был засчитан ранее.",
+            await bot.send_message(
+                chat_id=user_id,
+                text="✅ Этот пост уже был засчитан ранее.",
                 reply_markup=task_after_view_kb()
             )
             return
 
-        await increment_task_post_views(db, task_post_id)
+        updated = await increment_task_post_views(db, task_post_id)
+        if not updated:
+            await bot.send_message(
+                chat_id=user_id,
+                text="⚠️ Не удалось засчитать просмотр. Попробуй следующий пост.",
+                reply_markup=task_after_view_kb()
+            )
+            return
 
         await apply_balance_delta(
             db=db,
@@ -258,11 +277,14 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
     new_balance = await get_balance(db, user_id)
     available = await count_available_task_posts_for_user(db, user_id)
 
-    await callback.message.answer(
-        "✅ Просмотр засчитан\n\n"
-        f"Начислено: {fmt_stars(reward)}⭐\n"
-        f"Осталось доступно постов: {available}\n"
-        f"Баланс: {fmt_stars(new_balance)}⭐️",
+    await bot.send_message(
+        chat_id=user_id,
+        text=(
+            "✅ Просмотр засчитан\n\n"
+            f"Начислено: {fmt_stars(reward)}⭐\n"
+            f"Осталось доступно постов: {available}\n"
+            f"Баланс: {fmt_stars(new_balance)}⭐️"
+        ),
         reply_markup=task_after_view_kb()
     )
 
