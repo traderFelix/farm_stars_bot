@@ -39,7 +39,7 @@ from db import (
 
     # withdraw
     list_withdrawals, get_withdrawal, set_withdrawal_status, mark_withdraw_fee_refunded, list_recent_fee_payments,
-    find_withdraw_by_fee_charge_id,
+    find_withdraw_by_fee_charge_id, add_referral_bonus_for_paid_withdrawal,
 
     # channels
     list_task_channels, get_task_channel, create_task_channel, set_task_channel_active, task_channel_stats, update_task_channel_params,
@@ -787,6 +787,23 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
                 withdrawal_id=wid,
                 meta=f"method={method}",
             )
+
+            bonus_added, referrer_id, bonus_amount = await add_referral_bonus_for_paid_withdrawal(
+                db,
+                referred_user_id=int(user_id),
+                withdrawal_id=int(wid),
+                withdraw_amount=float(amount),
+            )
+
+            if bonus_added and referrer_id and bonus_amount > 0:
+                try:
+                    await callback.bot.send_message(
+                        referrer_id,
+                        f"🎉 Ваш друг вывел {float(amount):g}⭐.\n"
+                        f"Вы получили рефбек: {bonus_amount:g}⭐"
+                    )
+                except Exception:
+                    pass
 
         try:
             await callback.bot.send_message(

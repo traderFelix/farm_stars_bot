@@ -1,7 +1,7 @@
 import aiosqlite, uuid, asyncio
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
-from config import DB_PATH
+from config import DB_PATH, REFERRAL_PERCENT
 from decimal import Decimal, ROUND_DOWN
 
 
@@ -52,157 +52,169 @@ async def tx(db: aiosqlite.Connection, immediate: bool = True):
 
 async def init_db(db: aiosqlite.Connection) -> None:
     await db.executescript("""
-    CREATE TABLE IF NOT EXISTS users (
-      user_id INTEGER PRIMARY KEY,
-      username TEXT,
-      tg_first_name TEXT,
-      tg_last_name TEXT,
-      balance NUMERIC DEFAULT 0 CHECK(balance >= 0),
-      is_suspicious INTEGER NOT NULL DEFAULT 0,
-      suspicious_reason TEXT,
-      is_banned INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now')),
-      last_seen_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS campaigns (
-      campaign_key TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      reward_amount NUMERIC NOT NULL,
-      status TEXT DEFAULT 'draft',             -- draft | active | ended
-      description TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      starts_at TEXT,
-      ends_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS claims (
-      user_id INTEGER NOT NULL,
-      campaign_key TEXT NOT NULL,
-      amount NUMERIC NOT NULL,
-      claimed_at TEXT DEFAULT (datetime('now')),
-      status TEXT DEFAULT 'ok',
-      PRIMARY KEY (user_id, campaign_key),
-      FOREIGN KEY (user_id) REFERENCES users(user_id),
-      FOREIGN KEY (campaign_key) REFERENCES campaigns(campaign_key)
-    );
-
-    CREATE TABLE IF NOT EXISTS campaign_winners (
-      campaign_key TEXT NOT NULL,
-      username TEXT NOT NULL,                 -- храним БЕЗ @
-      user_id INTEGER,                        -- подтянем позже, когда победитель зайдет
-      added_at TEXT DEFAULT (datetime('now')),
-      added_by INTEGER,
-      PRIMARY KEY (campaign_key, username),
-      FOREIGN KEY (campaign_key) REFERENCES campaigns(campaign_key)
-    );
-
-    CREATE TABLE IF NOT EXISTS ledger (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      delta NUMERIC NOT NULL,
-      reason TEXT NOT NULL,                    -- withdraw_hold | withdraw_paid | withdraw_release | admin_adjust | contest_bonus
-      campaign_key TEXT,
-      withdrawal_id INTEGER,
-      meta TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(user_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS withdrawals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      amount NUMERIC NOT NULL,
-      method TEXT NOT NULL,                    -- 'ton' | 'stars'
-      details TEXT,                            -- wallet address for TON
-      status TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|rejected
-      created_at TEXT DEFAULT (datetime('now')),
-      processed_at TEXT,
-      processed_by INTEGER,
-      fee_xtr INTEGER NOT NULL DEFAULT 0,
-      fee_paid INTEGER NOT NULL DEFAULT 0,
-      fee_refunded INTEGER NOT NULL DEFAULT 0,
-      fee_telegram_charge_id TEXT,
-      fee_invoice_payload TEXT,
-      FOREIGN KEY (user_id) REFERENCES users(user_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS abuse_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      action TEXT NOT NULL,                       -- claim_click | claim_fail | withdraw_create
-      amount NUMERIC DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
+        CREATE TABLE IF NOT EXISTS users (
+          user_id INTEGER PRIMARY KEY,
+          username TEXT,
+          tg_first_name TEXT,
+          tg_last_name TEXT,
+          balance NUMERIC DEFAULT 0 CHECK(balance >= 0),
+          is_suspicious INTEGER NOT NULL DEFAULT 0,
+          suspicious_reason TEXT,
+          is_banned INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now')),
+          last_seen_at TEXT DEFAULT (datetime('now'))
+        );
     
-    CREATE TABLE IF NOT EXISTS xtr_ledger (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      withdrawal_id INTEGER,
-      delta_xtr INTEGER NOT NULL,                  -- + списали комиссию / - вернули комиссию
-      reason TEXT NOT NULL,                        -- withdraw_fee_paid | withdraw_fee_refunded | admin_fee_refund
-      telegram_payment_charge_id TEXT,
-      invoice_payload TEXT,
-      meta TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(user_id),
-      FOREIGN KEY (withdrawal_id) REFERENCES withdrawals(id)
-    );
+        CREATE TABLE IF NOT EXISTS campaigns (
+          campaign_key TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          reward_amount NUMERIC NOT NULL,
+          status TEXT DEFAULT 'draft',             -- draft | active | ended
+          description TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          starts_at TEXT,
+          ends_at TEXT
+        );
     
-    CREATE TABLE IF NOT EXISTS task_channels (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id TEXT NOT NULL UNIQUE,
-        title TEXT,
-        is_active INTEGER NOT NULL DEFAULT 1,
-        total_bought_views INTEGER NOT NULL DEFAULT 0,
-        views_per_post INTEGER NOT NULL DEFAULT 0,
-        view_seconds INTEGER NOT NULL DEFAULT 3,
-        allocated_views INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now'))
-    );
+        CREATE TABLE IF NOT EXISTS claims (
+          user_id INTEGER NOT NULL,
+          campaign_key TEXT NOT NULL,
+          amount NUMERIC NOT NULL,
+          claimed_at TEXT DEFAULT (datetime('now')),
+          status TEXT DEFAULT 'ok',
+          PRIMARY KEY (user_id, campaign_key),
+          FOREIGN KEY (user_id) REFERENCES users(user_id),
+          FOREIGN KEY (campaign_key) REFERENCES campaigns(campaign_key)
+        );
     
-    CREATE TABLE IF NOT EXISTS task_posts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        channel_id INTEGER NOT NULL,
-        channel_post_id INTEGER NOT NULL,
-        reward REAL NOT NULL DEFAULT 0.01,
-        required_views INTEGER NOT NULL DEFAULT 0,
-        current_views INTEGER NOT NULL DEFAULT 0,
-        is_active INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT DEFAULT (datetime('now')),
-        completed_at TEXT,
-        UNIQUE(channel_id, channel_post_id),
-        FOREIGN KEY (channel_id) REFERENCES task_channels(id)
-    );
+        CREATE TABLE IF NOT EXISTS campaign_winners (
+          campaign_key TEXT NOT NULL,
+          username TEXT NOT NULL,                 -- храним БЕЗ @
+          user_id INTEGER,                        -- подтянем позже, когда победитель зайдет
+          added_at TEXT DEFAULT (datetime('now')),
+          added_by INTEGER,
+          PRIMARY KEY (campaign_key, username),
+          FOREIGN KEY (campaign_key) REFERENCES campaigns(campaign_key)
+        );
     
-    CREATE TABLE IF NOT EXISTS task_post_views (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        task_post_id INTEGER NOT NULL,
-        reward REAL NOT NULL,
-        viewed_at TEXT DEFAULT (datetime('now')),
-        UNIQUE(user_id, task_post_id),
-        FOREIGN KEY (task_post_id) REFERENCES task_posts(id)
-    );
+        CREATE TABLE IF NOT EXISTS ledger (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          delta NUMERIC NOT NULL,
+          reason TEXT NOT NULL,                    -- withdraw_hold | withdraw_paid | withdraw_release | admin_adjust | contest_bonus
+          campaign_key TEXT,
+          withdrawal_id INTEGER,
+          meta TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          FOREIGN KEY (user_id) REFERENCES users(user_id)
+        );
     
-    CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
-    CREATE INDEX IF NOT EXISTS idx_users_last_seen_at ON users(last_seen_at);
-    CREATE INDEX IF NOT EXISTS idx_campaigns_status_created ON campaigns(status, created_at);
-    CREATE INDEX IF NOT EXISTS idx_claims_campaign_key ON claims(campaign_key);
-    CREATE INDEX IF NOT EXISTS idx_winners_campaign_key ON campaign_winners(campaign_key);
-    CREATE INDEX IF NOT EXISTS idx_ledger_withdrawal ON ledger(withdrawal_id);
-    CREATE INDEX IF NOT EXISTS idx_ledger_created_id ON ledger(created_at DESC, id DESC);
-    CREATE INDEX IF NOT EXISTS idx_ledger_user_created_id ON ledger(user_id, created_at DESC, id DESC);
-    CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
-    CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_abuse_events_user_action_time ON abuse_events(user_id, action, created_at);
-    CREATE INDEX IF NOT EXISTS idx_xtr_ledger_reason_created ON xtr_ledger(reason, created_at);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_xtr_ledger_unique_paid_charge ON xtr_ledger(reason, telegram_payment_charge_id)
-      WHERE reason = 'withdraw_fee_paid' AND telegram_payment_charge_id IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_task_channels_active ON task_channels(is_active, created_at);
-    CREATE INDEX IF NOT EXISTS idx_task_posts_queue ON task_posts(is_active, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_task_post_views_user ON task_post_views(user_id, viewed_at);
+        CREATE TABLE IF NOT EXISTS withdrawals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          amount NUMERIC NOT NULL,
+          method TEXT NOT NULL,                    -- 'ton' | 'stars'
+          details TEXT,                            -- wallet address for TON
+          status TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|rejected
+          created_at TEXT DEFAULT (datetime('now')),
+          processed_at TEXT,
+          processed_by INTEGER,
+          fee_xtr INTEGER NOT NULL DEFAULT 0,
+          fee_paid INTEGER NOT NULL DEFAULT 0,
+          fee_refunded INTEGER NOT NULL DEFAULT 0,
+          fee_telegram_charge_id TEXT,
+          fee_invoice_payload TEXT,
+          FOREIGN KEY (user_id) REFERENCES users(user_id)
+        );
+    
+        CREATE TABLE IF NOT EXISTS abuse_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          action TEXT NOT NULL,                       -- claim_click | claim_fail | withdraw_create
+          amount NUMERIC DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now'))
+        );
+        
+        CREATE TABLE IF NOT EXISTS xtr_ledger (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          withdrawal_id INTEGER,
+          delta_xtr INTEGER NOT NULL,                  -- + списали комиссию / - вернули комиссию
+          reason TEXT NOT NULL,                        -- withdraw_fee_paid | withdraw_fee_refunded | admin_fee_refund
+          telegram_payment_charge_id TEXT,
+          invoice_payload TEXT,
+          meta TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          FOREIGN KEY (user_id) REFERENCES users(user_id),
+          FOREIGN KEY (withdrawal_id) REFERENCES withdrawals(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS task_channels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL UNIQUE,
+            title TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            total_bought_views INTEGER NOT NULL DEFAULT 0,
+            views_per_post INTEGER NOT NULL DEFAULT 0,
+            view_seconds INTEGER NOT NULL DEFAULT 3,
+            allocated_views INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        
+        CREATE TABLE IF NOT EXISTS task_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id INTEGER NOT NULL,
+            channel_post_id INTEGER NOT NULL,
+            reward REAL NOT NULL DEFAULT 0.01,
+            required_views INTEGER NOT NULL DEFAULT 0,
+            current_views INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            completed_at TEXT,
+            UNIQUE(channel_id, channel_post_id),
+            FOREIGN KEY (channel_id) REFERENCES task_channels(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS task_post_views (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            task_post_id INTEGER NOT NULL,
+            reward REAL NOT NULL,
+            viewed_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, task_post_id),
+            FOREIGN KEY (task_post_id) REFERENCES task_posts(id)
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
+        CREATE INDEX IF NOT EXISTS idx_users_last_seen_at ON users(last_seen_at);
+        CREATE INDEX IF NOT EXISTS idx_campaigns_status_created ON campaigns(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_claims_campaign_key ON claims(campaign_key);
+        CREATE INDEX IF NOT EXISTS idx_winners_campaign_key ON campaign_winners(campaign_key);
+        CREATE INDEX IF NOT EXISTS idx_ledger_withdrawal ON ledger(withdrawal_id);
+        CREATE INDEX IF NOT EXISTS idx_ledger_created_id ON ledger(created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_ledger_user_created_id ON ledger(user_id, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_abuse_events_user_action_time ON abuse_events(user_id, action, created_at);
+        CREATE INDEX IF NOT EXISTS idx_xtr_ledger_reason_created ON xtr_ledger(reason, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_xtr_ledger_unique_paid_charge ON xtr_ledger(reason, telegram_payment_charge_id)
+          WHERE reason = 'withdraw_fee_paid' AND telegram_payment_charge_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_task_channels_active ON task_channels(is_active, created_at);
+        CREATE INDEX IF NOT EXISTS idx_task_posts_queue ON task_posts(is_active, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_task_post_views_user ON task_post_views(user_id, viewed_at);
     """)
+
+    async with db.execute("PRAGMA table_info(users)") as cur:
+        cols = {row["name"] for row in await cur.fetchall()}
+
+    if "referred_by" not in cols:
+        await db.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER")
+
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_users_referred_by
+        ON users(referred_by)
+    """)
+
     await db.commit()
 
 
@@ -277,6 +289,113 @@ async def top_users_by_balance(db: aiosqlite.Connection, limit: int = 10):
     ) as cur:
         return await cur.fetchall()
 
+async def bind_referrer(
+        db: aiosqlite.Connection,
+        user_id: int,
+        referrer_id: int,
+) -> bool:
+    user_id = int(user_id)
+    referrer_id = int(referrer_id)
+
+    if user_id == referrer_id:
+        return False
+
+    async with db.execute(
+            "SELECT referred_by FROM users WHERE user_id = ?",
+            (user_id,),
+    ) as cur:
+        row = await cur.fetchone()
+
+    if not row:
+        return False
+
+    if row["referred_by"] is not None:
+        return False
+
+    async with db.execute(
+            "SELECT 1 FROM users WHERE user_id = ?",
+            (referrer_id,),
+    ) as cur:
+        ref_exists = await cur.fetchone()
+
+    if not ref_exists:
+        return False
+
+    await db.execute(
+        """
+        UPDATE users
+        SET referred_by = ?
+        WHERE user_id = ? AND referred_by IS NULL
+        """,
+        (referrer_id, user_id),
+    )
+    return True
+
+
+async def get_referrer_id(db: aiosqlite.Connection, user_id: int) -> Optional[int]:
+    async with db.execute(
+            "SELECT referred_by FROM users WHERE user_id = ?",
+            (int(user_id),),
+    ) as cur:
+        row = await cur.fetchone()
+
+    if not row or row["referred_by"] is None:
+        return None
+
+    return int(row["referred_by"])
+
+
+async def get_referrals_count(db: aiosqlite.Connection, user_id: int) -> int:
+    async with db.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE referred_by = ?",
+            (int(user_id),),
+    ) as cur:
+        row = await cur.fetchone()
+    return int(row["c"] or 0)
+
+
+async def add_referral_bonus_for_paid_withdrawal(
+        db: aiosqlite.Connection,
+        referred_user_id: int,
+        withdrawal_id: int,
+        withdraw_amount: float,
+) -> tuple[bool, Optional[int], float]:
+    referred_user_id = int(referred_user_id)
+    withdrawal_id = int(withdrawal_id)
+    withdraw_amount = float(withdraw_amount)
+
+    referrer_id = await get_referrer_id(db, referred_user_id)
+    if not referrer_id:
+        return False, None, 0.0
+
+    async with db.execute(
+            """
+        SELECT 1
+        FROM ledger
+        WHERE withdrawal_id = ? AND reason = 'ref_bonus'
+        LIMIT 1
+        """,
+            (withdrawal_id,),
+    ) as cur:
+        exists = await cur.fetchone()
+
+    if exists:
+        return False, referrer_id, 0.0
+
+    bonus = round(withdraw_amount * REFERRAL_PERCENT, 2)
+    if bonus <= 0:
+        return False, referrer_id, 0.0
+
+    await apply_balance_delta(
+        db,
+        user_id=referrer_id,
+        delta=bonus,
+        reason="ref_bonus",
+        withdrawal_id=withdrawal_id,
+        meta=f"from_user_id={referred_user_id};percent={REFERRAL_PERCENT}",
+    )
+
+    return True, referrer_id, bonus
 
 # ---------- Campaigns ----------
 

@@ -28,10 +28,18 @@ def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎁 Забрать награду", callback_data="claim")],
         [InlineKeyboardButton(text="📋 Задания", callback_data="tasks")],
         [InlineKeyboardButton(text="👛 Вывод", callback_data="withdraw")],
+        [InlineKeyboardButton(text="🫂 Пригласить друга", callback_data="referrals")],
     ]
     if is_admin:
         rows.append([InlineKeyboardButton(text="🛠 Админка", callback_data="adm:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def referrals_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="back")]
+        ]
+    )
 
 def withdraw_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
