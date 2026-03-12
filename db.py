@@ -60,6 +60,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
           balance NUMERIC DEFAULT 0 CHECK(balance >= 0),
           is_suspicious INTEGER NOT NULL DEFAULT 0,
           suspicious_reason TEXT,
+          referred_by INTEGER,
           is_banned INTEGER DEFAULT 0,
           created_at TEXT DEFAULT (datetime('now')),
           last_seen_at TEXT DEFAULT (datetime('now'))
@@ -202,17 +203,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_task_channels_active ON task_channels(is_active, created_at);
         CREATE INDEX IF NOT EXISTS idx_task_posts_queue ON task_posts(is_active, created_at, id);
         CREATE INDEX IF NOT EXISTS idx_task_post_views_user ON task_post_views(user_id, viewed_at);
-    """)
-
-    async with db.execute("PRAGMA table_info(users)") as cur:
-        cols = {row["name"] for row in await cur.fetchall()}
-
-    if "referred_by" not in cols:
-        await db.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER")
-
-    await db.execute("""
-        CREATE INDEX IF NOT EXISTS idx_users_referred_by
-        ON users(referred_by)
+        CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by);
     """)
 
     await db.commit()

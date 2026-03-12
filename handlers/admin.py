@@ -1,4 +1,4 @@
-import io
+import io, logging
 from datetime import date, timedelta
 
 import matplotlib
@@ -7,6 +7,7 @@ matplotlib.use("Agg")  # важно для серверов без GUI
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
+from aiogram.enums import ParseMode
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, TelegramObject, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -58,6 +59,7 @@ from states import (
 
 router = Router()
 
+logger = logging.getLogger(__name__)
 
 class AdminOnly(Filter):
     async def __call__(self, event: TelegramObject) -> bool:
@@ -788,12 +790,23 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
                 meta=f"method={method}",
             )
 
-            bonus_added, referrer_id, bonus_amount = await add_referral_bonus_for_paid_withdrawal(
-                db,
-                referred_user_id=int(user_id),
-                withdrawal_id=int(wid),
-                withdraw_amount=float(amount),
-            )
+            try:
+                bonus_added, referrer_id, bonus_amount = await add_referral_bonus_for_paid_withdrawal(
+                    db,
+                    referred_user_id=int(user_id),
+                    withdrawal_id=int(wid),
+                    withdraw_amount=float(amount),
+                )
+                logger.info(
+                    "ref bonus: wid=%s referred_user_id=%s bonus_added=%s referrer_id=%s bonus_amount=%s",
+                    wid, user_id, bonus_added, referrer_id, bonus_amount
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to add referral bonus: wid=%s referred_user_id=%s amount=%s",
+                    wid, user_id, amount
+                )
+                raise
 
             if bonus_added and referrer_id and bonus_amount > 0:
                 try:
@@ -803,7 +816,7 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
                         f"Вы получили рефбек: {bonus_amount:g}⭐"
                     )
                 except Exception:
-                    pass
+                    logger.exception("Failed to notify referrer %s for withdrawal %s", referrer_id, wid)
 
         try:
             await callback.bot.send_message(
@@ -1183,11 +1196,12 @@ async def adm_fee_refund_menu(callback: CallbackQuery, db):
             f"fee={fee_xtr}⭐\n"
             f"status={status}\n"
             f"created_at={created_at}\n"
-            f"{user_id} {charge_id}\n"
+            f"<code>{user_id} {charge_id}</code>\n"
         )
 
     await callback.message.edit_text(
         "\n".join(lines),
+        parse_mode=ParseMode.HTML,
         reply_markup=admin_fee_refund_kb(),
     )
 
