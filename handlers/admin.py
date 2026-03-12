@@ -40,14 +40,21 @@ from db import (
     # withdraw
     list_withdrawals, get_withdrawal, set_withdrawal_status, mark_withdraw_fee_refunded, list_recent_fee_payments,
     find_withdraw_by_fee_charge_id,
+
+    # channels
+    list_task_channels, get_task_channel, create_task_channel, set_task_channel_active, task_channel_stats, update_task_channel_params,
+    get_task_channel_allocated_views, list_task_posts_by_channel
 )
 
 from keyboards import (
     main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, admin_fee_refund_kb,
     campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb,
+    admin_task_channels_kb, admin_task_channel_card_kb,
 )
 
-from states import CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust, AdminRefundFee
+from states import (
+    CampaignCreate, AddWinners, DeleteWinner, UserLookup, AdminAdjust, AdminRefundFee, TaskChannelCreate, TaskChannelEdit,
+)
 
 router = Router()
 
@@ -1138,4 +1145,347 @@ async def adm_fee_refund_manual_finish(message: Message, state: FSMContext, db):
         "✅ Комиссия успешно возвращена.\n"
         f"user_id={user_id}\n"
         f"charge_id={charge_id}"
+    )
+
+async def _render_task_channel_card(callback: CallbackQuery, channel_id: int, db):
+    row = await get_task_channel(db, channel_id)
+    if not row:
+        await callback.message.edit_text("❌ Канал не найден.", reply_markup=admin_back_kb())
+        return
+
+    stats = await task_channel_stats(db, channel_id)
+
+    title = row["title"] or "Без названия"
+    chat_id = row["chat_id"]
+    is_active = int(row["is_active"] or 0) == 1
+    total_bought = int(row["total_bought_views"] or 0)
+    views_per_post = int(row["views_per_post"] or 0)
+    allocated = int(row["allocated_views"] or 0)
+    remaining = int(row["remaining_views"] or 0)
+
+    total_posts = int(stats["total_posts"] or 0)
+    total_required = int(stats["total_required"] or 0)
+    total_current = int(stats["total_current"] or 0)
+    active_posts = int(stats["active_posts"] or 0)
+
+    status_text = "🟢 Включен" if is_active else "🔴 Отключен"
+
+    await callback.message.edit_text(
+        "📺 Канал просмотров\n\n"
+        f"Название: {title}\n"
+        f"ID канала: {chat_id}\n"
+        f"Статус: {status_text}\n\n"
+        f"Куплено просмотров: {total_bought}\n"
+        f"На один пост: {views_per_post}\n"
+        f"Уже распределено: {allocated}\n"
+        f"Осталось распределить: {remaining}\n\n"
+        f"Постов в системе: {total_posts}\n"
+        f"Активных постов: {active_posts}\n"
+        f"Всего нужно просмотров по постам: {total_required}\n"
+        f"Фактически набрано: {total_current}",
+        reply_markup=admin_task_channel_card_kb(channel_id, is_active),
+    )
+
+@router.callback_query(F.data == "adm:tch:list")
+async def adm_task_channels_list(callback: CallbackQuery, db):
+    await callback.answer()
+    rows = await list_task_channels(db)
+
+    if not rows:
+        await callback.message.edit_text(
+            "📺 Каналы просмотров\n\n"
+            "Пока нет подключенных каналов.",
+            reply_markup=admin_task_channels_kb([]),
+        )
+        return
+
+    await callback.message.edit_text(
+        "📺 Каналы просмотров\n\n"
+        "Выбери канал:",
+        reply_markup=admin_task_channels_kb(rows),
+    )
+
+
+@router.callback_query(F.data == "adm:tch:new")
+async def adm_task_channel_new_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(TaskChannelCreate.chat_id)
+    await callback.message.edit_text(
+        "➕ Подключение канала\n\n"
+        "Пришли chat_id канала.\n"
+        "Пример: -1001234567890",
+        reply_markup=admin_back_kb(),
+    )
+
+
+@router.message(TaskChannelCreate.chat_id)
+async def adm_task_channel_new_chat_id(message: Message, state: FSMContext):
+    chat_id = (message.text or "").strip()
+
+    if not chat_id.startswith("-100"):
+        await message.answer("❌ Нужен channel id в формате -100...")
+        return
+
+    await state.update_data(chat_id=chat_id)
+    await state.set_state(TaskChannelCreate.total_bought_views)
+    await message.answer("Теперь введи, сколько просмотров куплено всего для этого канала:")
+
+
+@router.message(TaskChannelCreate.total_bought_views)
+async def adm_task_channel_new_total_views(message: Message, state: FSMContext):
+    try:
+        total_bought_views = int((message.text or "").strip())
+        if total_bought_views <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи целое число больше 0.")
+        return
+
+    await state.update_data(total_bought_views=total_bought_views)
+    await state.set_state(TaskChannelCreate.views_per_post)
+    await message.answer("Теперь введи, сколько просмотров выделять на 1 пост:")
+
+
+@router.message(TaskChannelCreate.views_per_post)
+async def adm_task_channel_new_views_per_post(message: Message, state: FSMContext, db):
+    try:
+        views_per_post = int((message.text or "").strip())
+        if views_per_post <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи целое число больше 0.")
+        return
+
+    data = await state.get_data()
+    chat_id = data["chat_id"]
+    total_bought_views = int(data["total_bought_views"])
+
+    if views_per_post > total_bought_views:
+        await message.answer("❌ Просмотров на 1 пост не может быть больше, чем куплено всего.")
+        return
+
+    async with tx(db):
+        new_id = await create_task_channel(
+            db=db,
+            chat_id=chat_id,
+            title=None,
+            total_bought_views=total_bought_views,
+            views_per_post=views_per_post,
+        )
+
+    await state.clear()
+
+    await message.answer(
+        "✅ Канал подключен\n\n"
+        f"chat_id: {chat_id}\n"
+        f"Куплено просмотров: {total_bought_views}\n"
+        f"На 1 пост: {views_per_post}"
+    )
+
+    row = await get_task_channel(db, new_id)
+    stats = await task_channel_stats(db, new_id)
+
+    await message.answer(
+        "Открой список каналов через админку, либо используй кнопку ниже.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📺 Открыть канал", callback_data=f"adm:tch:open:{new_id}")],
+                [InlineKeyboardButton(text="📺 Все каналы", callback_data="adm:tch:list")],
+            ]
+        )
+    )
+
+
+@router.callback_query(F.data.startswith("adm:tch:open:"))
+async def adm_task_channel_open(callback: CallbackQuery, db):
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[3])
+    await _render_task_channel_card(callback, channel_id, db)
+
+
+@router.callback_query(F.data.startswith("adm:tch:toggle:"))
+async def adm_task_channel_toggle(callback: CallbackQuery, db):
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[3])
+
+    row = await get_task_channel(db, channel_id)
+    if not row:
+        await callback.message.edit_text("❌ Канал не найден.", reply_markup=admin_back_kb())
+        return
+
+    new_active = 0 if int(row["is_active"] or 0) == 1 else 1
+
+    async with tx(db):
+        await set_task_channel_active(db, channel_id, new_active)
+
+    await _render_task_channel_card(callback, channel_id, db)
+
+@router.callback_query(F.data.startswith("adm:tch:edit:"))
+async def adm_task_channel_edit_start(callback: CallbackQuery, state: FSMContext, db):
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[3])
+
+    row = await get_task_channel(db, channel_id)
+    if not row:
+        await callback.message.edit_text("❌ Канал не найден.", reply_markup=admin_back_kb())
+        return
+
+    await state.set_state(TaskChannelEdit.total_bought_views)
+    await state.update_data(channel_id=channel_id)
+
+    await callback.message.edit_text(
+        "⚙️ Редактирование параметров канала\n\n"
+        f"Текущий chat_id: {row['chat_id']}\n"
+        f"Сейчас куплено просмотров: {int(row['total_bought_views'] or 0)}\n"
+        f"Сейчас просмотров на 1 пост: {int(row['views_per_post'] or 0)}\n"
+        f"Уже распределено по постам: {int(row['allocated_views'] or 0)}\n\n"
+        "Введи новое общее количество купленных просмотров:",
+        reply_markup=admin_back_kb(),
+    )
+
+@router.message(TaskChannelEdit.total_bought_views)
+async def adm_task_channel_edit_total_views(message: Message, state: FSMContext, db):
+    try:
+        total_bought_views = int((message.text or "").strip())
+        if total_bought_views <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи целое число больше 0.")
+        return
+
+    data = await state.get_data()
+    channel_id = int(data["channel_id"])
+
+    allocated_views = await get_task_channel_allocated_views(db, channel_id)
+    if total_bought_views < allocated_views:
+        await message.answer(
+            "❌ Нельзя поставить меньше, чем уже распределено по постам.\n\n"
+            f"Уже распределено: {allocated_views}"
+        )
+        return
+
+    await state.update_data(total_bought_views=total_bought_views)
+    await state.set_state(TaskChannelEdit.views_per_post)
+    await message.answer("Теперь введи новое количество просмотров на 1 пост:")
+
+@router.message(TaskChannelEdit.views_per_post)
+async def adm_task_channel_edit_views_per_post(message: Message, state: FSMContext, db):
+    try:
+        views_per_post = int((message.text or "").strip())
+        if views_per_post <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи целое число больше 0.")
+        return
+
+    data = await state.get_data()
+    channel_id = int(data["channel_id"])
+    total_bought_views = int(data["total_bought_views"])
+
+    if views_per_post > total_bought_views:
+        await message.answer("❌ Просмотров на 1 пост не может быть больше, чем куплено всего.")
+        return
+
+    async with tx(db):
+        await update_task_channel_params(
+            db=db,
+            channel_id=channel_id,
+            total_bought_views=total_bought_views,
+            views_per_post=views_per_post,
+        )
+
+    await state.clear()
+
+    row = await get_task_channel(db, channel_id)
+    if not row:
+        await message.answer("✅ Параметры обновлены.")
+        return
+
+    stats = await task_channel_stats(db, channel_id)
+
+    title = row["title"] or "Без названия"
+    chat_id = row["chat_id"]
+    is_active = int(row["is_active"] or 0) == 1
+    allocated = int(row["allocated_views"] or 0)
+    remaining = int(row["remaining_views"] or 0)
+
+    total_posts = int(stats["total_posts"] or 0)
+    active_posts = int(stats["active_posts"] or 0)
+    total_required = int(stats["total_required"] or 0)
+    total_current = int(stats["total_current"] or 0)
+
+    status_text = "🟢 Включен" if is_active else "🔴 Отключен"
+
+    await message.answer(
+        "✅ Параметры канала обновлены\n\n"
+        f"Название: {title}\n"
+        f"chat_id: {chat_id}\n"
+        f"Статус: {status_text}\n\n"
+        f"Куплено просмотров: {int(row['total_bought_views'] or 0)}\n"
+        f"На 1 пост: {int(row['views_per_post'] or 0)}\n"
+        f"Уже распределено: {allocated}\n"
+        f"Осталось распределить: {remaining}\n\n"
+        f"Постов в системе: {total_posts}\n"
+        f"Активных постов: {active_posts}\n"
+        f"Всего нужно просмотров по постам: {total_required}\n"
+        f"Фактически набрано: {total_current}",
+        reply_markup=admin_task_channel_card_kb(channel_id, is_active),
+    )
+
+@router.callback_query(F.data.startswith("adm:tch:posts:"))
+async def adm_task_channel_posts(callback: CallbackQuery, db):
+    await callback.answer()
+    channel_id = int(callback.data.split(":")[3])
+
+    channel = await get_task_channel(db, channel_id)
+    if not channel:
+        await callback.message.edit_text("❌ Канал не найден.", reply_markup=admin_back_kb())
+        return
+
+    rows = await list_task_posts_by_channel(db, channel_id, limit=20)
+
+    title = channel["title"] or channel["chat_id"]
+
+    if not rows:
+        await callback.message.edit_text(
+            "📊 Статус по постам\n\n"
+            f"Канал: {title}\n\n"
+            "Пока нет добавленных постов.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅ Назад к каналу", callback_data=f"adm:tch:open:{channel_id}")],
+                    [InlineKeyboardButton(text="📺 Все каналы", callback_data="adm:tch:list")],
+                ]
+            )
+        )
+        return
+
+    lines = []
+    for row in rows:
+        post_id = int(row["channel_post_id"])
+        current_views = int(row["current_views"] or 0)
+        required_views = int(row["required_views"] or 0)
+
+        done = current_views >= required_views and required_views > 0
+        status = "✅" if done else "🔄"
+
+        created_at = row["created_at"] or "-"
+        lines.append(
+            f"📝 Пост #{post_id} ({created_at}) — {current_views}/{required_views} {status}\n"
+        )
+
+    text = (
+            "📊 Статус по постам\n\n"
+            f"Канал: {title}\n\n"
+            + "\n".join(lines)
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅ Назад к каналу", callback_data=f"adm:tch:open:{channel_id}")],
+                [InlineKeyboardButton(text="📺 Все каналы", callback_data="adm:tch:list")],
+            ]
+        )
     )

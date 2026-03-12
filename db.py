@@ -149,6 +149,41 @@ async def init_db(db: aiosqlite.Connection) -> None:
       FOREIGN KEY (withdrawal_id) REFERENCES withdrawals(id)
     );
     
+    CREATE TABLE IF NOT EXISTS task_channels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT NOT NULL UNIQUE,
+        title TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        total_bought_views INTEGER NOT NULL DEFAULT 0,
+        views_per_post INTEGER NOT NULL DEFAULT 0,
+        allocated_views INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    
+    CREATE TABLE IF NOT EXISTS task_posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        channel_post_id INTEGER NOT NULL,
+        reward REAL NOT NULL DEFAULT 0.01,
+        required_views INTEGER NOT NULL DEFAULT 0,
+        current_views INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        completed_at TEXT,
+        UNIQUE(channel_id, channel_post_id),
+        FOREIGN KEY (channel_id) REFERENCES task_channels(id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS task_post_views (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        task_post_id INTEGER NOT NULL,
+        reward REAL NOT NULL,
+        viewed_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(user_id, task_post_id),
+        FOREIGN KEY (task_post_id) REFERENCES task_posts(id)
+    );
+    
     CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
     CREATE INDEX IF NOT EXISTS idx_users_last_seen_at ON users(last_seen_at);
     CREATE INDEX IF NOT EXISTS idx_campaigns_status_created ON campaigns(status, created_at);
@@ -162,6 +197,9 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_xtr_ledger_reason_created ON xtr_ledger(reason, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_xtr_ledger_unique_paid_charge ON xtr_ledger(reason, telegram_payment_charge_id)
       WHERE reason = 'withdraw_fee_paid' AND telegram_payment_charge_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_task_channels_active ON task_channels(is_active, created_at);
+    CREATE INDEX IF NOT EXISTS idx_task_posts_queue ON task_posts(is_active, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_task_post_views_user ON task_post_views(user_id, viewed_at);
     """)
     await db.commit()
 
@@ -1011,9 +1049,9 @@ async def get_user_earnings_breakdown(db, user_id: int):
     cursor = await db.execute(
         """
         SELECT
-            COALESCE(SUM(CASE WHEN reason = 'task_bonus' THEN delta ELSE 0 END), 0) AS task_bonus,
-            COALESCE(SUM(CASE WHEN reason = 'contest_bonus' THEN delta ELSE 0 END), 0) AS contest_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'view_post_bonus' THEN delta ELSE 0 END), 0) AS view_post_bonus,
             COALESCE(SUM(CASE WHEN reason = 'daily_bonus' THEN delta ELSE 0 END), 0) AS daily_bonus,
+            COALESCE(SUM(CASE WHEN reason = 'contest_bonus' THEN delta ELSE 0 END), 0) AS contest_bonus,
             COALESCE(SUM(CASE WHEN reason = 'referral_bonus' THEN delta ELSE 0 END), 0) AS referral_bonus,
             COALESCE(SUM(CASE WHEN reason = 'admin_adjust' THEN delta ELSE 0 END), 0) AS admin_adjust,
             COALESCE(SUM(CASE
@@ -1026,9 +1064,9 @@ async def get_user_earnings_breakdown(db, user_id: int):
     )
     row = await cursor.fetchone()
 
-    tasks = row["task_bonus"] or 0
-    contests = row["contest_bonus"] or 0
+    tasks = row["view_post_bonus"] or 0
     daily_checkin = row["daily_bonus"] or 0
+    contests = row["contest_bonus"] or 0
     referrals = row["referral_bonus"] or 0
     admin_adjust = row["admin_adjust"] or 0
     total = row["total_earned"] or 0
@@ -1042,10 +1080,10 @@ async def get_user_earnings_breakdown(db, user_id: int):
         "total": total,
         "tasks": tasks,
         "tasks_pct": pct(tasks, total),
-        "contests": contests,
-        "contests_pct": pct(contests, total),
         "daily_checkin": daily_checkin,
         "daily_checkin_pct": pct(daily_checkin, total),
+        "contests": contests,
+        "contests_pct": pct(contests, total),
         "referrals": referrals,
         "referrals_pct": pct(referrals, total),
         "admin_adjust": admin_adjust,
@@ -1087,8 +1125,8 @@ async def build_user_stats_text(db, user_id: int) -> str:
     return (
         f"⭐ Всего заработано: {fmt_stars(stats['total'])}⭐\n"
         f"{fmt_stars(stats['tasks'])} ({stats['tasks_pct']}%) — задания\n"
-        f"{fmt_stars(stats['contests'])} ({stats['contests_pct']}%) — конкурсы\n"
         f"{fmt_stars(stats['daily_checkin'])} ({stats['daily_checkin_pct']}%) — дейли чекин\n"
+        f"{fmt_stars(stats['contests'])} ({stats['contests_pct']}%) — конкурсы\n"
         f"{fmt_stars(stats['referrals'])} ({stats['referrals_pct']}%) — рефералы\n"
         f"{fmt_stars(stats['admin_adjust'])} ({stats['admin_adjust_pct']}%) — начисления от админа"
     )
@@ -1208,3 +1246,354 @@ async def xtr_ledger_sum_by_reason(db: aiosqlite.Connection, reason: str) -> int
     ) as cur:
         row = await cur.fetchone()
         return int(row["s"] or 0)
+
+
+async def list_task_channels(db: aiosqlite.Connection):
+    async with db.execute(
+            """
+        SELECT
+            id,
+            chat_id,
+            COALESCE(title, '') AS title,
+            is_active,
+            total_bought_views,
+            views_per_post,
+            allocated_views,
+            (total_bought_views - allocated_views) AS remaining_views,
+            created_at
+        FROM task_channels
+        ORDER BY id DESC
+        """
+    ) as cur:
+        return await cur.fetchall()
+
+
+async def get_task_channel(db: aiosqlite.Connection, channel_id: int):
+    async with db.execute(
+            """
+        SELECT
+            id,
+            chat_id,
+            COALESCE(title, '') AS title,
+            is_active,
+            total_bought_views,
+            views_per_post,
+            allocated_views,
+            (total_bought_views - allocated_views) AS remaining_views,
+            created_at
+        FROM task_channels
+        WHERE id = ?
+        LIMIT 1
+        """,
+            (int(channel_id),),
+    ) as cur:
+        return await cur.fetchone()
+
+
+async def get_task_channel_by_chat_id(db: aiosqlite.Connection, chat_id: str):
+    async with db.execute(
+            """
+        SELECT
+            id,
+            chat_id,
+            COALESCE(title, '') AS title,
+            is_active,
+            total_bought_views,
+            views_per_post,
+            allocated_views,
+            (total_bought_views - allocated_views) AS remaining_views,
+            created_at
+        FROM task_channels
+        WHERE chat_id = ?
+        LIMIT 1
+        """,
+            (str(chat_id),),
+    ) as cur:
+        return await cur.fetchone()
+
+
+async def create_task_channel(
+        db: aiosqlite.Connection,
+        chat_id: str,
+        title: Optional[str],
+        total_bought_views: int,
+        views_per_post: int,
+) -> int:
+    cur = await db.execute(
+        """
+        INSERT INTO task_channels (
+            chat_id, title, is_active, total_bought_views, views_per_post, allocated_views, created_at
+        )
+        VALUES (?, ?, 1, ?, ?, 0, datetime('now'))
+        """,
+        (
+            str(chat_id),
+            title,
+            int(total_bought_views),
+            int(views_per_post),
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+async def set_task_channel_active(db: aiosqlite.Connection, channel_id: int, is_active: int) -> None:
+    await db.execute(
+        """
+        UPDATE task_channels
+        SET is_active = ?
+        WHERE id = ?
+        """,
+        (int(is_active), int(channel_id)),
+    )
+
+
+async def allocate_task_post_from_channel_post(
+        db: aiosqlite.Connection,
+        chat_id: str,
+        channel_post_id: int,
+        title: Optional[str] = None,
+        reward: float = 0.01,
+) -> bool:
+    channel = await get_task_channel_by_chat_id(db, chat_id)
+    if not channel:
+        return False
+
+    if int(channel["is_active"] or 0) != 1:
+        return False
+
+    remaining = int(channel["remaining_views"] or 0)
+    views_per_post = int(channel["views_per_post"] or 0)
+
+    if remaining <= 0 or views_per_post <= 0:
+        return False
+
+    alloc = min(remaining, views_per_post)
+    if alloc <= 0:
+        return False
+
+    cur = await db.execute(
+        """
+        INSERT OR IGNORE INTO task_posts (
+            channel_id, channel_post_id, reward, required_views, current_views, is_active, created_at
+        )
+        VALUES (?, ?, ?, ?, 0, 1, datetime('now'))
+        """,
+        (
+            int(channel["id"]),
+            int(channel_post_id),
+            float(reward),
+            int(alloc),
+        ),
+    )
+
+    if cur.rowcount != 1:
+        return False
+
+    await db.execute(
+        """
+        UPDATE task_channels
+        SET
+            allocated_views = allocated_views + ?,
+            title = COALESCE(?, title)
+        WHERE id = ?
+        """,
+        (int(alloc), title, int(channel["id"])),
+    )
+    return True
+
+
+async def count_available_task_posts_for_user(db: aiosqlite.Connection, user_id: int) -> int:
+    async with db.execute(
+            """
+        SELECT COUNT(*)
+        FROM task_posts p
+        JOIN task_channels c ON c.id = p.channel_id
+        WHERE p.is_active = 1
+          AND c.is_active = 1
+          AND p.current_views < p.required_views
+          AND NOT EXISTS (
+              SELECT 1
+              FROM task_post_views v
+              WHERE v.user_id = ?
+                AND v.task_post_id = p.id
+          )
+        """,
+            (int(user_id),),
+    ) as cur:
+        row = await cur.fetchone()
+        return int(row[0] or 0)
+
+
+async def get_next_task_post_for_user(db: aiosqlite.Connection, user_id: int):
+    async with db.execute(
+            """
+        SELECT
+            p.id,
+            p.channel_id,
+            c.chat_id,
+            p.channel_post_id,
+            p.reward,
+            p.required_views,
+            p.current_views,
+            p.created_at
+        FROM task_posts p
+        JOIN task_channels c ON c.id = p.channel_id
+        WHERE p.is_active = 1
+          AND c.is_active = 1
+          AND p.current_views < p.required_views
+          AND NOT EXISTS (
+              SELECT 1
+              FROM task_post_views v
+              WHERE v.user_id = ?
+                AND v.task_post_id = p.id
+          )
+        ORDER BY datetime(p.created_at) ASC, p.id ASC
+        LIMIT 1
+        """,
+            (int(user_id),),
+    ) as cur:
+        return await cur.fetchone()
+
+
+async def get_specific_task_post_for_user(
+        db: aiosqlite.Connection,
+        user_id: int,
+        task_post_id: int,
+):
+    async with db.execute(
+            """
+        SELECT
+            p.id,
+            p.channel_id,
+            c.chat_id,
+            p.channel_post_id,
+            p.reward,
+            p.required_views,
+            p.current_views,
+            p.created_at
+        FROM task_posts p
+        JOIN task_channels c ON c.id = p.channel_id
+        WHERE p.id = ?
+          AND p.is_active = 1
+          AND c.is_active = 1
+          AND p.current_views < p.required_views
+          AND NOT EXISTS (
+              SELECT 1
+              FROM task_post_views v
+              WHERE v.user_id = ?
+                AND v.task_post_id = p.id
+          )
+        LIMIT 1
+        """,
+            (int(task_post_id), int(user_id)),
+    ) as cur:
+        return await cur.fetchone()
+
+
+async def add_task_post_view(
+        db: aiosqlite.Connection,
+        user_id: int,
+        task_post_id: int,
+        reward: float,
+) -> bool:
+    cur = await db.execute(
+        """
+        INSERT OR IGNORE INTO task_post_views (user_id, task_post_id, reward, viewed_at)
+        VALUES (?, ?, ?, datetime('now'))
+        """,
+        (int(user_id), int(task_post_id), float(reward)),
+    )
+    return cur.rowcount == 1
+
+
+async def increment_task_post_views(db: aiosqlite.Connection, task_post_id: int) -> bool:
+    cur = await db.execute(
+        """
+        UPDATE task_posts
+        SET
+            current_views = current_views + 1,
+            is_active = CASE
+                WHEN current_views + 1 >= required_views THEN 0
+                ELSE is_active
+            END,
+            completed_at = CASE
+                WHEN current_views + 1 >= required_views THEN datetime('now')
+                ELSE completed_at
+            END
+        WHERE id = ?
+          AND is_active = 1
+          AND current_views < required_views
+        """,
+        (int(task_post_id),),
+    )
+    return cur.rowcount == 1
+
+
+async def task_channel_stats(db: aiosqlite.Connection, channel_id: int):
+    async with db.execute(
+            """
+        SELECT
+            COUNT(*) AS total_posts,
+            COALESCE(SUM(required_views), 0) AS total_required,
+            COALESCE(SUM(current_views), 0) AS total_current,
+            SUM(CASE WHEN is_active = 1 AND current_views < required_views THEN 1 ELSE 0 END) AS active_posts
+        FROM task_posts
+        WHERE channel_id = ?
+        """,
+            (int(channel_id),),
+    ) as cur:
+        return await cur.fetchone()
+
+async def update_task_channel_params(
+        db: aiosqlite.Connection,
+        channel_id: int,
+        total_bought_views: int,
+        views_per_post: int,
+) -> None:
+    await db.execute(
+        """
+        UPDATE task_channels
+        SET
+            total_bought_views = ?,
+            views_per_post = ?
+        WHERE id = ?
+        """,
+        (
+            int(total_bought_views),
+            int(views_per_post),
+            int(channel_id),
+        ),
+    )
+
+async def get_task_channel_allocated_views(db: aiosqlite.Connection, channel_id: int) -> int:
+    async with db.execute(
+            """
+        SELECT allocated_views
+        FROM task_channels
+        WHERE id = ?
+        LIMIT 1
+        """,
+            (int(channel_id),),
+    ) as cur:
+        row = await cur.fetchone()
+        return int(row["allocated_views"] or 0) if row else 0
+
+async def list_task_posts_by_channel(db: aiosqlite.Connection, channel_id: int, limit: int = 20):
+    async with db.execute(
+            """
+        SELECT
+            id,
+            channel_post_id,
+            required_views,
+            current_views,
+            is_active,
+            created_at,
+            completed_at
+        FROM task_posts
+        WHERE channel_id = ?
+        ORDER BY channel_post_id DESC, id DESC
+        LIMIT ?
+        """,
+            (int(channel_id), int(limit)),
+    ) as cur:
+        return await cur.fetchall()

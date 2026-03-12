@@ -55,6 +55,15 @@ def withdraw_method_kb():
 def tasks_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="👁 Смотреть пост", callback_data="task:view_post")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="back")],
+        ]
+    )
+
+def task_after_view_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👁 Смотреть следующий пост", callback_data="task:view_post")],
             [InlineKeyboardButton(text="⬅ Назад", callback_data="back")],
         ]
     )
@@ -67,6 +76,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📋 Все конкурсы", callback_data="adm:list")],
             [InlineKeyboardButton(text="➕ Создать конкурс", callback_data="adm:new")],
             [InlineKeyboardButton(text="📊 Статистика конкурсов", callback_data="adm:stats_menu")],
+            [InlineKeyboardButton(text="📺 Каналы просмотров", callback_data="adm:tch:list")],
             [InlineKeyboardButton(text="📈 Рост пользователей", callback_data="adm:growth_png")],
             [InlineKeyboardButton(text="📜 Леджер (последние)", callback_data="adm:ledger_last")],
             [InlineKeyboardButton(text="🔎 Детали пользователя", callback_data="adm:user_balance")],
@@ -223,3 +233,37 @@ def withdraw_stars_amount_kb():
             InlineKeyboardButton(text="⬅ Назад", callback_data="withdraw:new"),
         ],
     ])
+
+def admin_task_channels_kb(rows) -> InlineKeyboardMarkup:
+    kb = []
+
+    for row in rows:
+        channel_id = int(row["id"])
+        title = row["title"] or row["chat_id"]
+        is_active = int(row["is_active"] or 0)
+        remaining = int(row["remaining_views"] or 0)
+        status = "🟢" if is_active else "🔴"
+        kb.append([
+            InlineKeyboardButton(
+                text=f"{status} {title} • остаток {remaining}",
+                callback_data=f"adm:tch:open:{channel_id}",
+            )
+        ])
+
+    kb.append([InlineKeyboardButton(text="➕ Подключить канал", callback_data="adm:tch:new")])
+    kb.append([InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def admin_task_channel_card_kb(channel_id: int, is_active: bool) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Статус по постам", callback_data=f"adm:tch:posts:{channel_id}")],
+            [InlineKeyboardButton(text="⚙️ Редактировать параметры", callback_data=f"adm:tch:edit:{channel_id}")],
+            [InlineKeyboardButton(
+                text="🔴 Отключить канал" if is_active else "🟢 Включить канал",
+                callback_data=f"adm:tch:toggle:{channel_id}",
+            )],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:tch:list")],
+        ]
+    )

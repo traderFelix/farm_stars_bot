@@ -24,3 +24,12 @@ class WithdrawCreate(StatesGroup):
 
 class AdminRefundFee(StatesGroup):
     waiting_manual_data = State()
+
+class TaskChannelCreate(StatesGroup):
+    chat_id = State()
+    total_bought_views = State()
+    views_per_post = State()
+
+class TaskChannelEdit(StatesGroup):
+    total_bought_views = State()
+    views_per_post = State()
