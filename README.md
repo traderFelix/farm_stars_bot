@@ -12,3 +12,5 @@ export CHANNEL_ID=""
 export ADMIN_IDS=""
 
 python3 bot.py
+
+sqlite3 bot.db

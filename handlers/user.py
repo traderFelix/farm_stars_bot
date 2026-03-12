@@ -1,12 +1,15 @@
+import asyncio
+
 from typing import Optional
 
+from aiogram.filters import CommandStart, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram import Router, F, Bot
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, PreCheckoutQuery, LabeledPrice
 )
-from aiogram.filters import CommandStart, StateFilter
-from aiogram.fsm.context import FSMContext
-from aiogram.enums import ParseMode
 
 from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENTAGE
 
@@ -14,11 +17,13 @@ from db import (
     sum_recent_abuse_amount, has_pending_withdrawal, user_created_hours_ago, get_user_earnings_breakdown,
     register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough,
     claim_reward, list_active_campaigns, log_abuse_event, count_recent_abuse_events, tx, fmt_stars,
-    wallet_used_by_another_user, wallet_users, ensure_user_registered, xtr_ledger_add
+    wallet_used_by_another_user, wallet_users, ensure_user_registered, xtr_ledger_add, apply_balance_delta,
+    increment_task_post_views, count_available_task_posts_for_user, get_next_task_post_for_user,
+    get_specific_task_post_for_user, add_task_post_view, allocate_task_post_from_channel_post,
 )
 
 from keyboards import (
-    subscribe_keyboard, main_menu, tasks_menu, bottom_menu_kb, withdraw_stars_amount_kb,
+    subscribe_keyboard, main_menu, tasks_menu, bottom_menu_kb, withdraw_stars_amount_kb, task_after_view_kb,
     withdraw_method_kb, withdraw_menu_kb, withdraw_back_kb
 )
 
@@ -53,6 +58,28 @@ def menu_text(balance: float) -> str:
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+@router.channel_post()
+async def ingest_task_channel_post(message: Message, db):
+    has_content = bool(
+        message.text
+        or message.caption
+        or message.photo
+        or message.video
+        or message.animation
+        or message.document
+    )
+    if not has_content:
+        return
+
+    async with tx(db, immediate=True):
+        await allocate_task_post_from_channel_post(
+            db=db,
+            chat_id=str(message.chat.id),
+            channel_post_id=int(message.message_id),
+            title=message.chat.title,
+            reward=0.01,
+        )
 
 @router.message(StateFilter("*"), F.text == "🏠 Главное меню")
 async def open_main_menu_from_bottom_button(message: Message, state: FSMContext, db):
@@ -137,14 +164,130 @@ async def show_tasks(callback: CallbackQuery, db):
 
     user_id = callback.from_user.id
     balance = await get_balance(db, user_id)
+    available = await count_available_task_posts_for_user(db, user_id)
 
     await callback.message.edit_text(
-        "🚀 Задания скоро появятся\n\n"
-        "Сейчас раздел находится в разработке.\n"
-        "Готовим интересную механику заработка ⭐\n\n"
-        "Следите за обновлениями 👀\n\n"
+        "📋 Задания\n\n"
+        "👁 Просмотр постов из каналов\n"
+        "За каждый просмотр начисляется награда.\n"
+        f"Доступно постов: {available}\n\n"
         f"Баланс: {fmt_stars(balance)}⭐️",
         reply_markup=tasks_menu()
+    )
+
+
+@router.callback_query(F.data == "task:view_post")
+async def task_view_post(callback: CallbackQuery, bot: Bot, db):
+    user_id = callback.from_user.id
+
+    async with tx(db, immediate=False):
+        await ensure_user_registered(callback, db)
+
+    row = await get_next_task_post_for_user(db, user_id)
+    if not row:
+        await callback.answer("❌ Доступных постов пока нет.", show_alert=True)
+        return
+
+    view_seconds = int(row["view_seconds"])
+
+    recent_clicks = await count_recent_abuse_events(db, user_id, "task_view_click", 1)
+    if recent_clicks >= 60 / view_seconds:
+        await callback.answer("⏳ Слишком часто. Попробуй через минуту.", show_alert=True)
+        return
+
+    await log_abuse_event(db, user_id, "task_view_click")
+
+    task_post_id = int(row["id"])
+    from_chat_id = row["chat_id"]
+    channel_post_id = int(row["channel_post_id"])
+    reward = float(row["reward"] or 0)
+
+    await callback.answer("Показываю пост...")
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    try:
+        sent = await bot.forward_message(
+            chat_id=user_id,
+            from_chat_id=from_chat_id,
+            message_id=channel_post_id,
+        )
+    except TelegramBadRequest:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                "❌ Не удалось показать пост.\n"
+                "Проверь, что бот есть в канале и видит этот пост."
+            )
+        )
+        return
+
+    await asyncio.sleep(view_seconds)
+
+    try:
+        await bot.delete_message(chat_id=user_id, message_id=sent.message_id)
+    except Exception:
+        pass
+
+    async with tx(db, immediate=True):
+        current_row = await get_specific_task_post_for_user(db, user_id, task_post_id)
+        if not current_row:
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "⚠️ Этот пост уже стал недоступен.\n"
+                    "Попробуй открыть следующий."
+                ),
+                reply_markup=task_after_view_kb()
+            )
+            return
+
+        inserted = await add_task_post_view(
+            db=db,
+            user_id=user_id,
+            task_post_id=task_post_id,
+            reward=reward,
+        )
+        if not inserted:
+            await bot.send_message(
+                chat_id=user_id,
+                text="✅ Этот пост уже был засчитан ранее.",
+                reply_markup=task_after_view_kb()
+            )
+            return
+
+        updated = await increment_task_post_views(db, task_post_id)
+        if not updated:
+            await bot.send_message(
+                chat_id=user_id,
+                text="⚠️ Не удалось засчитать просмотр. Попробуй следующий пост.",
+                reply_markup=task_after_view_kb()
+            )
+            return
+
+        await apply_balance_delta(
+            db=db,
+            user_id=user_id,
+            delta=reward,
+            reason="view_post_bonus",
+            meta=f"task_post:{task_post_id}:channel_post:{channel_post_id}",
+        )
+
+    new_balance = await get_balance(db, user_id)
+    available = await count_available_task_posts_for_user(db, user_id)
+
+    await bot.send_message(
+        chat_id=user_id,
+        text=(
+            "✅ Просмотр засчитан\n\n"
+            f"Начислено: {fmt_stars(reward)}⭐\n"
+            f"Осталось доступно постов: {available}\n"
+            f"Баланс: {fmt_stars(new_balance)}⭐️"
+        ),
+        reply_markup=task_after_view_kb()
     )
 
 
