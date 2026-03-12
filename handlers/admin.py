@@ -574,7 +574,6 @@ async def adm_ledger_last(callback: CallbackQuery, db):
         return
 
     if not rows and page > 0:
-        await callback.answer("Дальше записей нет")
         return
 
     has_next = len(rows) > LEDGER_PAGE_SIZE
