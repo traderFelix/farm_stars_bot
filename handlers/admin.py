@@ -559,7 +559,7 @@ async def adm_ledger_last(callback: CallbackQuery, db):
         SELECT l.created_at, u.username, l.delta, l.reason, l.campaign_key
         FROM ledger l
         LEFT JOIN users u ON u.user_id = l.user_id
-        ORDER BY datetime(l.created_at) DESC, l.id DESC
+        ORDER BY l.created_at DESC, l.id DESC
         LIMIT ? OFFSET ?
         """,
             (LEDGER_PAGE_SIZE + 1, offset),
@@ -1067,7 +1067,7 @@ async def adm_user_ledger(callback: CallbackQuery, db):
         SELECT created_at, delta, reason, campaign_key
         FROM ledger
         WHERE user_id = ?
-        ORDER BY datetime(created_at) DESC, id DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT ? OFFSET ?
         """,
             (user_id, LEDGER_PAGE_SIZE + 1, offset),

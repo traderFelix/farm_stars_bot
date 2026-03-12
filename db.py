@@ -192,6 +192,8 @@ async def init_db(db: aiosqlite.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_winners_campaign_key ON campaign_winners(campaign_key);
     CREATE INDEX IF NOT EXISTS idx_ledger_user_created ON ledger(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_ledger_withdrawal ON ledger(withdrawal_id);
+    CREATE INDEX IF NOT EXISTS idx_ledger_created_id ON ledger(created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_ledger_user_created_id ON ledger(user_id, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_status_created ON withdrawals(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_withdrawals_user_created ON withdrawals(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_abuse_events_user_action_time ON abuse_events(user_id, action, created_at);
