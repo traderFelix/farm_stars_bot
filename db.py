@@ -104,7 +104,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           user_id INTEGER NOT NULL,
           delta NUMERIC NOT NULL,
-          reason TEXT NOT NULL,                    -- withdraw_hold | withdraw_paid | withdraw_release | admin_adjust | contest_bonus
+          reason TEXT NOT NULL,                    -- withdraw_hold | withdraw_paid | withdraw_release | admin_adjust | contest_bonus | referral_bonus | view_post_bonus | daily_bonus
           campaign_key TEXT,
           withdrawal_id INTEGER,
           meta TEXT,
@@ -370,7 +370,7 @@ async def add_referral_bonus_for_paid_withdrawal(
             """
         SELECT 1
         FROM ledger
-        WHERE withdrawal_id = ? AND reason = 'ref_bonus'
+        WHERE withdrawal_id = ? AND reason = 'referral_bonus'
         LIMIT 1
         """,
             (withdrawal_id,),
@@ -388,7 +388,7 @@ async def add_referral_bonus_for_paid_withdrawal(
         db,
         user_id=referrer_id,
         delta=bonus,
-        reason="ref_bonus",
+        reason="referral_bonus",
         withdrawal_id=withdrawal_id,
         meta=f"from_user_id={referred_user_id};percent={REFERRAL_PERCENT}",
     )
