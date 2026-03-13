@@ -683,6 +683,7 @@ async def adm_user_adjust_finish(message: Message, state: FSMContext, db):
             )
     except Exception:
         await message.answer("❌ Ошибка операции, попробуй ещё раз")
+        logger.exception(Exception)
         return
 
     balance = await get_balance(db, user_id)

@@ -814,12 +814,13 @@ async def create_withdrawal(db: aiosqlite.Connection, user_id: int, amount: floa
         VALUES (?, ?, ?, ?, 'pending')
         """,
         (int(user_id), float(amount), method, wallet),
-
-        logger.info(
-            "WITHDRAW CREATE | user_id=%s amount=%s wallet=%s",
-            user_id, amount, wallet
-        )
     )
+
+    logger.info(
+        "WITHDRAW CREATE | user_id=%s amount=%s wallet=%s",
+        user_id, amount, wallet
+    )
+
     return int(cur.lastrowid)
 
 async def list_withdrawals(db: aiosqlite.Connection, status: str = "pending", limit: int = 20):
@@ -908,11 +909,11 @@ async def apply_balance_delta(
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (int(user_id), float(delta), reason, campaign_key, withdrawal_id, meta),
+    )
 
-        logger.info(
-            "LEDGER | user_id=%s delta=%s reason=%s withdrawal_id=%s campaign=%s meta=%s",
-            user_id, delta, reason, withdrawal_id, campaign_key, meta
-        )
+    logger.info(
+        "LEDGER | user_id=%s delta=%s reason=%s withdrawal_id=%s campaign=%s meta=%s",
+        user_id, delta, reason, withdrawal_id, campaign_key, meta
     )
 
     await db.execute(
