@@ -17,7 +17,7 @@ logging.basicConfig(
     ]
 )
 
-logging.getLogger("aiogram").setLevel(logging.INFO)
+logging.getLogger("aiogram").setLevel(logging.WARNING)
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 async def main():
