@@ -23,6 +23,7 @@ venv/
 bot.db
 bot.db-shm
 bot.db-wal
+*.log
 
 # Secrets/env
 .env

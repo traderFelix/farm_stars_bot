@@ -1,4 +1,4 @@
-import asyncio
+import asyncio, logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -8,6 +8,17 @@ from db import open_db, close_db, init_db
 from handlers import user_router, admin_router, errors_router
 from middlewares.db import DbMiddleware
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+
+logging.getLogger("aiogram").setLevel(logging.INFO)
+logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 async def main():
     if not TOKEN:

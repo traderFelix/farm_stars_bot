@@ -1,9 +1,11 @@
-import aiosqlite, uuid, asyncio
+import aiosqlite, uuid, asyncio, logging
+
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
 from config import DB_PATH, REFERRAL_PERCENT
 from decimal import Decimal, ROUND_DOWN
 
+logger = logging.getLogger(__name__)
 
 # ---------- Connection / TX ----------
 
@@ -351,6 +353,11 @@ async def add_referral_bonus_for_paid_withdrawal(
         withdrawal_id: int,
         withdraw_amount: float,
 ) -> tuple[bool, Optional[int], float]:
+    logger.info(
+        "REF CHECK | referred_user=%s withdrawal=%s amount=%s",
+        referred_user_id, withdrawal_id, withdraw_amount
+    )
+
     referred_user_id = int(referred_user_id)
     withdrawal_id = int(withdrawal_id)
     withdraw_amount = float(withdraw_amount)
@@ -384,6 +391,11 @@ async def add_referral_bonus_for_paid_withdrawal(
         reason="ref_bonus",
         withdrawal_id=withdrawal_id,
         meta=f"from_user_id={referred_user_id};percent={REFERRAL_PERCENT}",
+    )
+
+    logger.info(
+        "REF RESULT | bonus_added=%s referrer=%s amount=%s",
+        True, referrer_id, bonus
     )
 
     return True, referrer_id, bonus
@@ -795,13 +807,18 @@ async def ledger_sum(db: aiosqlite.Connection, user_id: int) -> float:
         row = await cur.fetchone()
     return float(row["s"] or 0.0)
 
-async def create_withdrawal(db: aiosqlite.Connection, user_id: int, amount: float, method: str, details: Optional[str] = None) -> int:
+async def create_withdrawal(db: aiosqlite.Connection, user_id: int, amount: float, method: str, wallet: Optional[str] = None) -> int:
     cur = await db.execute(
         """
         INSERT INTO withdrawals (user_id, amount, method, details, status)
         VALUES (?, ?, ?, ?, 'pending')
         """,
-        (int(user_id), float(amount), method, details),
+        (int(user_id), float(amount), method, wallet),
+
+        logger.info(
+            "WITHDRAW CREATE | user_id=%s amount=%s wallet=%s",
+            user_id, amount, wallet
+        )
     )
     return int(cur.lastrowid)
 
@@ -891,6 +908,11 @@ async def apply_balance_delta(
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (int(user_id), float(delta), reason, campaign_key, withdrawal_id, meta),
+
+        logger.info(
+            "LEDGER | user_id=%s delta=%s reason=%s withdrawal_id=%s campaign=%s meta=%s",
+            user_id, delta, reason, withdrawal_id, campaign_key, meta
+        )
     )
 
     await db.execute(

@@ -781,6 +781,11 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
 
             await set_withdrawal_status(db, wid, "paid", admin_id)
 
+            logger.info(
+                "WITHDRAW PAID | wid=%s user_id=%s amount=%s",
+                wid, user_id, amount
+            )
+
             await ledger_add(
                 db,
                 user_id=user_id,
@@ -798,7 +803,7 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
                     withdraw_amount=float(amount),
                 )
                 logger.info(
-                    "ref bonus: wid=%s referred_user_id=%s bonus_added=%s referrer_id=%s bonus_amount=%s",
+                    "REF BONUS CHECK | wid=%s referred_user_id=%s bonus_added=%s referrer_id=%s bonus_amount=%s",
                     wid, user_id, bonus_added, referrer_id, bonus_amount
                 )
             except Exception:
@@ -817,6 +822,11 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
                     )
                 except Exception:
                     logger.exception("Failed to notify referrer %s for withdrawal %s", referrer_id, wid)
+
+            logger.info(
+                "REF BONUS SENT | wid=%s referrer_id=%s referred_user_id=%s bonus_amount=%s",
+                wid, referrer_id, user_id, bonus_amount
+            )
 
         try:
             await callback.bot.send_message(
