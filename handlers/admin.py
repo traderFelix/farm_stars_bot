@@ -1,4 +1,4 @@
-import io
+import io, logging
 from datetime import date, timedelta
 
 import matplotlib
@@ -7,6 +7,7 @@ matplotlib.use("Agg")  # важно для серверов без GUI
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
+from aiogram.enums import ParseMode
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, TelegramObject, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -39,7 +40,7 @@ from db import (
 
     # withdraw
     list_withdrawals, get_withdrawal, set_withdrawal_status, mark_withdraw_fee_refunded, list_recent_fee_payments,
-    find_withdraw_by_fee_charge_id,
+    find_withdraw_by_fee_charge_id, add_referral_bonus_for_paid_withdrawal,
 
     # channels
     list_task_channels, get_task_channel, create_task_channel, set_task_channel_active, task_channel_stats, update_task_channel_params,
@@ -58,6 +59,7 @@ from states import (
 
 router = Router()
 
+logger = logging.getLogger(__name__)
 
 class AdminOnly(Filter):
     async def __call__(self, event: TelegramObject) -> bool:
@@ -681,6 +683,7 @@ async def adm_user_adjust_finish(message: Message, state: FSMContext, db):
             )
     except Exception:
         await message.answer("❌ Ошибка операции, попробуй ещё раз")
+        logger.exception(Exception)
         return
 
     balance = await get_balance(db, user_id)
@@ -719,12 +722,12 @@ async def _render_withdraw_card(callback: CallbackQuery, wid: int, db):
         await callback.answer("❌ Заявка не найдена", show_alert=True)
         return
 
-    _id, user_id, username, amount, method, details, status, created_at = (
+    _id, user_id, username, amount, method, wallet, status, created_at = (
         row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
     )
 
     name = f"@{username}" if username else f"id:{user_id}"
-    det = details or "—"
+    det = wallet or "—"
 
     await callback.message.edit_text(
         f"💸 Заявка #{_id}\n\n"
@@ -757,7 +760,7 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
         await callback.answer("❌ Заявка не найдена", show_alert=True)
         return
 
-    _id, user_id, username, amount, method, details, status, created_at = (
+    _id, user_id, username, amount, method, wallet, status, created_at = (
         row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
     )
 
@@ -779,6 +782,11 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
 
             await set_withdrawal_status(db, wid, "paid", admin_id)
 
+            logger.info(
+                "WITHDRAW PAID | wid=%s user_id=%s amount=%s",
+                wid, user_id, amount
+            )
+
             await ledger_add(
                 db,
                 user_id=user_id,
@@ -786,6 +794,39 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
                 reason="withdraw_paid",
                 withdrawal_id=wid,
                 meta=f"method={method}",
+            )
+
+            try:
+                bonus_added, referrer_id, bonus_amount = await add_referral_bonus_for_paid_withdrawal(
+                    db,
+                    referred_user_id=int(user_id),
+                    withdrawal_id=int(wid),
+                    withdraw_amount=float(amount),
+                )
+                logger.info(
+                    "REF BONUS CHECK | wid=%s referred_user_id=%s bonus_added=%s referrer_id=%s bonus_amount=%s",
+                    wid, user_id, bonus_added, referrer_id, bonus_amount
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to add referral bonus: wid=%s referred_user_id=%s amount=%s",
+                    wid, user_id, amount
+                )
+                raise
+
+            if bonus_added and referrer_id and bonus_amount > 0:
+                try:
+                    await callback.bot.send_message(
+                        referrer_id,
+                        f"🎉 Ваш друг вывел {float(amount):g}⭐.\n"
+                        f"Вы получили рефбек: {bonus_amount:g}⭐"
+                    )
+                except Exception:
+                    logger.exception("Failed to notify referrer %s for withdrawal %s", referrer_id, wid)
+
+            logger.info(
+                "REF BONUS SENT | wid=%s referrer_id=%s referred_user_id=%s bonus_amount=%s",
+                wid, referrer_id, user_id, bonus_amount
             )
 
         try:
@@ -871,7 +912,7 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
         await callback.answer("❌ Заявка не найдена", show_alert=True)
         return
 
-    _id, user_id, username, amount, method, details, status, created_at = (
+    _id, user_id, username, amount, method, wallet, status, created_at = (
         row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
     )
 
@@ -948,12 +989,14 @@ async def adm_audit_balances(callback: CallbackQuery, db):
     total_withdrawn_sum = await total_withdrawn_amount(db)
     pending_withdrawn_sum = await pending_withdrawn_amount(db)
     claimed_from_ledger = await ledger_sum_by_reason(db, "contest_bonus")
+    referral_bonus = await ledger_sum_by_reason(db, "referral_bonus")
 
     lines = [
         "🧮 Сверка балансов\n",
         f"Баланс пользователей: {fmt_stars(total_balances_sum)}⭐\n",
         f"Получено в конкурсах (база): {fmt_stars(total_claimed_all)}⭐",
         f"Получено в конкурсах (леджер): {fmt_stars(claimed_from_ledger)}⭐",
+        f"Получено за рефералов: {fmt_stars(referral_bonus)}⭐\n"
         f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐",
         f"Выведено: {fmt_stars(total_withdrawn_sum)}⭐",
         f"В обработке: {fmt_stars(pending_withdrawn_sum)}⭐\n",
@@ -1166,11 +1209,12 @@ async def adm_fee_refund_menu(callback: CallbackQuery, db):
             f"fee={fee_xtr}⭐\n"
             f"status={status}\n"
             f"created_at={created_at}\n"
-            f"{user_id} {charge_id}\n"
+            f"<code>{user_id} {charge_id}</code>\n"
         )
 
     await callback.message.edit_text(
         "\n".join(lines),
+        parse_mode=ParseMode.HTML,
         reply_markup=admin_fee_refund_kb(),
     )
 

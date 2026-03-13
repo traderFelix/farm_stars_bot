@@ -1,42 +1,44 @@
-import asyncio
+import asyncio, logging
 
 from typing import Optional
 
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram import Router, F, Bot
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, PreCheckoutQuery, LabeledPrice
 )
 
-from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENTAGE
+from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENT
 
 from db import (
     sum_recent_abuse_amount, has_pending_withdrawal, user_created_hours_ago, get_user_earnings_breakdown,
     register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough,
     claim_reward, list_active_campaigns, log_abuse_event, count_recent_abuse_events, tx, fmt_stars,
     wallet_used_by_another_user, wallet_users, ensure_user_registered, xtr_ledger_add, apply_balance_delta,
-    increment_task_post_views, count_available_task_posts_for_user, get_next_task_post_for_user,
-    get_specific_task_post_for_user, add_task_post_view, allocate_task_post_from_channel_post,
+    increment_task_post_views, count_available_task_posts_for_user, get_next_task_post_for_user, bind_referrer,
+    get_specific_task_post_for_user, add_task_post_view, allocate_task_post_from_channel_post, get_referrals_count,
 )
 
 from keyboards import (
     subscribe_keyboard, main_menu, tasks_menu, bottom_menu_kb, withdraw_stars_amount_kb, task_after_view_kb,
-    withdraw_method_kb, withdraw_menu_kb, withdraw_back_kb
+    withdraw_method_kb, withdraw_menu_kb, withdraw_back_kb, referrals_kb
 )
 
 from states import WithdrawCreate
 
 router = Router()
 
+logger = logging.getLogger(__name__)
+
 WITHDRAW_TEXT = f"""
 💰 <b>Вывод и обмен звёзд</b>
 
 🔷 Минимальная сумма вывода и обмена <b>{MIN_WITHDRAW}⭐</b>
 🔷 Конвертация звёзд в TON производится по курсу на сайте <b>Fragment</b>
-🔷 Для вывода необходимо, чтобы минимум <b>{MIN_WITHDRAW_PERCENTAGE * 100:.0f}%</b> звезд на балансе были добыты путем выполнения заданий
+🔷 Для вывода необходимо, чтобы минимум <b>{MIN_WITHDRAW_PERCENT * 100:.0f}%</b> звезд на балансе были добыты путем выполнения заданий
 
 <blockquote>
 <b>Первый вывод бесплатный 🔥</b>
@@ -104,29 +106,58 @@ async def start(message: Message, bot: Bot, db):
     first_name = message.from_user.first_name
     last_name = message.from_user.last_name
 
+    start_arg = None
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) > 1:
+        start_arg = parts[1].strip()
+
+    logger.info("START user_id=%s text=%r start_arg=%r", user_id, message.text, start_arg)
+
     async with tx(db, immediate=False):
         await register_user(db, user_id, username, first_name, last_name)
+
+        if start_arg and start_arg.isdigit():
+            try:
+                bound = await bind_referrer(db, user_id, int(start_arg))
+                logger.info(
+                    "bind_referrer user_id=%s referrer_id=%s bound=%s",
+                    user_id, int(start_arg), bound
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to bind referrer user_id=%s referrer_id=%s",
+                    user_id, start_arg
+                )
 
     try:
         member = await bot.get_chat_member(CHANNEL_ID, user_id)
     except Exception:
-        await message.answer("Ошибка проверки канала.")
+        try:
+            await message.answer("Ошибка проверки канала.")
+        except TelegramForbiddenError:
+            logger.warning("User %s blocked bot during channel check error reply", user_id)
         return
 
-    if member.status in ("member", "administrator", "creator"):
-        balance = await get_balance(db, user_id)
+    try:
+        if member.status in ("member", "administrator", "creator"):
+            balance = await get_balance(db, user_id)
 
-        await message.answer(
-            "Нажми кнопку снизу, чтобы открыть меню 👇",
-            reply_markup=bottom_menu_kb()
-        )
+            await message.answer(
+                "Нажми кнопку снизу, чтобы открыть меню 👇",
+                reply_markup=bottom_menu_kb()
+            )
 
-        await message.answer(
-            menu_text(balance),
-            reply_markup=main_menu(is_admin(user_id))
-        )
-    else:
-        await message.answer("Чтобы продолжить, подпишись на канал 👇", reply_markup=subscribe_keyboard())
+            await message.answer(
+                menu_text(balance),
+                reply_markup=main_menu(is_admin(user_id))
+            )
+        else:
+            await message.answer(
+                "Чтобы продолжить, подпишись на канал 👇",
+                reply_markup=subscribe_keyboard()
+            )
+    except TelegramForbiddenError:
+        logger.warning("User %s blocked bot", user_id)
 
 
 @router.callback_query(F.data == "check_sub")
@@ -449,11 +480,11 @@ async def validate_withdraw_rules(db, user_id: int, amount: float) -> Optional[s
         return "🚫 Вывод пока недоступен."
 
     tasks_pct = tasks / total
-    if tasks_pct < MIN_WITHDRAW_PERCENTAGE:
-        need_more = max(0.0, total * MIN_WITHDRAW_PERCENTAGE - tasks)
+    if tasks_pct < MIN_WITHDRAW_PERCENT:
+        need_more = max(0.0, total * MIN_WITHDRAW_PERCENT - tasks)
         return (
             "🚫 Вывод пока недоступен\n\n"
-            f"Для вывода минимум {MIN_WITHDRAW_PERCENTAGE * 100:.0f}% всех полученных звёзд должны быть добыты через задания.\n\n"
+            f"Для вывода минимум {MIN_WITHDRAW_PERCENT * 100:.0f}% всех полученных звёзд должны быть добыты через задания.\n\n"
             f"• Всего получено: {total:.2f}⭐\n"
             f"• Через задания: {tasks:.2f}⭐ ({tasks_pct * 100:.1f}%)\n"
             f"• Нужно добрать ещё: {need_more:.2f}⭐"
@@ -469,13 +500,13 @@ async def finalize_withdraw_request(
         user_id: int,
         amount: float,
         method: str,
-        details: Optional[str] = None,
+        wallet: Optional[str] = None,
         paid_fee: int = 0,
         fee_payment_charge_id: Optional[str] = None,
         fee_invoice_payload: Optional[str] = None,
 ):
     async with tx(db):
-        wid = await create_withdrawal(db, user_id, amount, method=method, details=details)
+        wid = await create_withdrawal(db, user_id, amount, method=method, wallet=wallet)
 
         await db.execute(
             """
@@ -531,8 +562,8 @@ async def finalize_withdraw_request(
         f"🔧 {method.upper()}\n"
     )
 
-    if details:
-        admin_text += f"🧾 {details}\n"
+    if wallet:
+        admin_text += f"🧾 {wallet}\n"
 
     if paid_fee > 0:
         admin_text += f"💳 Комиссия оплачена: {paid_fee} XTR\n"
@@ -546,16 +577,16 @@ async def finalize_withdraw_request(
         except Exception:
             pass
 
-        if method == "ton" and details:
-            wallet_abuse = await wallet_used_by_another_user(db, user_id, details)
+        if method == "ton" and wallet:
+            wallet_abuse = await wallet_used_by_another_user(db, user_id, wallet)
             if wallet_abuse:
-                used_by = await wallet_users(db, details)
+                used_by = await wallet_users(db, wallet)
                 used_by_text = "\n".join(used_by) if used_by else "нет данных"
 
                 abuse_text = (
                     f"🚨 Подозрение на мультиаккаунт\n\n"
                     f"Новый пользователь: @{message.from_user.username or 'no_username'} (id={user_id})\n"
-                    f"Кошелек:\n{details}\n\n"
+                    f"Кошелек:\n{wallet}\n\n"
                     f"Уже использовали:\n{used_by_text}"
                 )
 
@@ -575,8 +606,8 @@ async def finalize_withdraw_request(
         f"Способ: {'Telegram Stars' if method == 'stars' else 'TON'}\n"
     )
 
-    if details:
-        success_text += f"Кошелёк: {details}\n"
+    if wallet:
+        success_text += f"Кошелёк: {wallet}\n"
 
     if paid_fee > 0:
         success_text += f"Комиссия оплачена: {paid_fee} XTR\n"
@@ -593,7 +624,7 @@ async def start_fee_payment_or_create(
         user_id: int,
         amount: float,
         method: str,
-        details: Optional[str] = None,
+        wallet: Optional[str] = None,
 ):
     error_text = await validate_withdraw_rules(db, user_id, amount)
     if error_text:
@@ -612,7 +643,7 @@ async def start_fee_payment_or_create(
                 user_id=user_id,
                 amount=amount,
                 method=method,
-                details=details,
+                wallet=wallet,
                 paid_fee=0,
                 fee_payment_charge_id=None,
                 fee_invoice_payload=None,
@@ -627,7 +658,7 @@ async def start_fee_payment_or_create(
     await state.update_data(
         amount=amount,
         method=method,
-        details=details,
+        wallet=wallet,
         withdraw_fee=fee,
     )
     await state.set_state(WithdrawCreate.fee_payment)
@@ -705,7 +736,7 @@ async def withdraw_stars_fixed_amount(callback: CallbackQuery, state: FSMContext
                 user_id=user_id,
                 amount=amount,
                 method="stars",
-                details=None,
+                wallet=None,
                 paid_fee=0,
                 fee_payment_charge_id=None,
                 fee_invoice_payload=None,
@@ -720,7 +751,7 @@ async def withdraw_stars_fixed_amount(callback: CallbackQuery, state: FSMContext
     await state.update_data(
         amount=amount,
         method="stars",
-        details=None,
+        wallet=None,
         withdraw_fee=fee,
     )
     await state.set_state(WithdrawCreate.fee_payment)
@@ -759,21 +790,21 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
         return
 
     await state.update_data(amount=amount)
-    await state.set_state(WithdrawCreate.details)
+    await state.set_state(WithdrawCreate.wallet)
     await message.answer("Введи TON-адрес кошелька для выплаты:")
 
-@router.message(WithdrawCreate.details)
+@router.message(WithdrawCreate.wallet)
 async def withdraw_enter_details(message: Message, state: FSMContext, db):
     user_id = message.from_user.id
     data = await state.get_data()
     amount = float(data["amount"])
-    details = message.text.strip()
+    wallet = message.text.strip()
 
-    if len(details) < 10:
+    if len(wallet) < 10:
         await message.answer("❌ Похоже на неправильный TON-адрес. Введи ещё раз.")
         return
 
-    await state.update_data(details=details)
+    await state.update_data(wallet=wallet)
 
     await start_fee_payment_or_create(
         message=message,
@@ -782,7 +813,7 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
         user_id=user_id,
         amount=amount,
         method="ton",
-        details=details,
+        wallet=wallet,
     )
 
 
@@ -838,7 +869,7 @@ async def on_successful_payment(message: Message, state: FSMContext, db):
 
     amount = float(data.get("amount") or 0)
     method = data.get("method")
-    details = data.get("details")
+    wallet = data.get("wallet")
     fee = int(data.get("withdraw_fee") or 0)
 
     if amount <= 0 or method not in {"stars", "ton"}:
@@ -870,7 +901,7 @@ async def on_successful_payment(message: Message, state: FSMContext, db):
             user_id=user_id,
             amount=amount,
             method=method,
-            details=details,
+            wallet=wallet,
             paid_fee=fee,
             fee_payment_charge_id=payment.telegram_payment_charge_id,
             fee_invoice_payload=payment.invoice_payload,
@@ -922,3 +953,25 @@ async def withdraw_my(callback: CallbackQuery, db):
         reply_markup=withdraw_back_kb()
     )
 
+@router.callback_query(F.data == "referrals")
+async def show_referrals(callback: CallbackQuery, db):
+    await callback.answer()
+
+    user_id = callback.from_user.id
+    invited_count = await get_referrals_count(db, user_id)
+
+    me = await callback.bot.get_me()
+    invite_link = f"https://t.me/{me.username}?start={user_id}"
+
+    text = (
+        "🫂 <b>Приглашайте друзей и получайте до 10% рефбека ⭐ с каждого их вывода!</b>\n\n"
+        f"Ваша ссылка 👉🏻\n<code>{invite_link}</code>\n\n"
+        f"👥 Всего приглашено: {invited_count}"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=referrals_kb(),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )

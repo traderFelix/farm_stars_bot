@@ -28,10 +28,18 @@ def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎁 Забрать награду", callback_data="claim")],
         [InlineKeyboardButton(text="📋 Задания", callback_data="tasks")],
         [InlineKeyboardButton(text="👛 Вывод", callback_data="withdraw")],
+        [InlineKeyboardButton(text="🫂 Пригласить друга", callback_data="referrals")],
     ]
     if is_admin:
         rows.append([InlineKeyboardButton(text="🛠 Админка", callback_data="adm:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def referrals_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="back")]
+        ]
+    )
 
 def withdraw_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -90,7 +98,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
 
 def admin_withdraw_list_kb(rows):
     kb = []
-    for wid, user_id, username, amount, method, details, status, created_at in rows:
+    for wid, user_id, username, amount, method, wallet, status, created_at in rows:
         name = f"@{username}" if username else f"id:{user_id}"
         kb.append([InlineKeyboardButton(
             text=f"#{wid} {name} — {float(amount):g}⭐ ({method})",

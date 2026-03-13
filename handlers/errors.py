@@ -3,7 +3,8 @@ import logging
 import traceback
 
 from aiogram import Router, Bot
-from aiogram.types import ErrorEvent, CallbackQuery, Message
+from aiogram.types import ErrorEvent
+from aiogram.exceptions import TelegramForbiddenError
 
 from config import ADMIN_IDS
 
@@ -15,8 +16,12 @@ async def _send_admin_trace(bot: Bot, text: str):
     # Telegram лимит ~4096 символов, режем на части
     chunk_size = 3500
     for i in range(0, len(text), chunk_size):
+        chunk = text[i:i + chunk_size]
         for admin_id in ADMIN_IDS:
-            await bot.send_message(admin_id, text[i:i + chunk_size])
+            try:
+                await bot.send_message(admin_id, chunk)
+            except Exception:
+                logger.exception("Failed to send error chunk to admin %s", admin_id)
 
 
 @router.error()
@@ -41,15 +46,20 @@ async def global_error_handler(event: ErrorEvent, bot: Bot):
     except Exception:
         logger.exception("Failed to send error to admin")
 
-    # Ничего технического пользователю не показываем
+    # Если бот заблокирован пользователем — просто молча выходим
+    if isinstance(exc, TelegramForbiddenError):
+        return True
+
     try:
-        if isinstance(event.update.callback_query, CallbackQuery):
+        if event.update.callback_query:
             await event.update.callback_query.answer(
                 "❌ Произошла ошибка. Уже чиним.",
                 show_alert=True
             )
-        elif isinstance(event.update.message, Message):
+        elif event.update.message:
             await event.update.message.answer("❌ Произошла ошибка. Попробуй ещё раз.")
+    except TelegramForbiddenError:
+        pass
     except Exception:
         logger.exception("Failed to notify user about error")
 
