@@ -19,7 +19,7 @@ class AdminAdjust(StatesGroup):
 
 class WithdrawCreate(StatesGroup):
     amount = State()
-    details = State()
+    wallet = State()
     fee_payment = State()
 
 class AdminRefundFee(StatesGroup):

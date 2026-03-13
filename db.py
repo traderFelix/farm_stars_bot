@@ -117,7 +117,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
           user_id INTEGER NOT NULL,
           amount NUMERIC NOT NULL,
           method TEXT NOT NULL,                    -- 'ton' | 'stars'
-          details TEXT,                            -- wallet address for TON
+          wallet TEXT,                            -- wallet address for TON
           status TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|rejected
           created_at TEXT DEFAULT (datetime('now')),
           processed_at TEXT,
@@ -810,7 +810,7 @@ async def ledger_sum(db: aiosqlite.Connection, user_id: int) -> float:
 async def create_withdrawal(db: aiosqlite.Connection, user_id: int, amount: float, method: str, wallet: Optional[str] = None) -> int:
     cur = await db.execute(
         """
-        INSERT INTO withdrawals (user_id, amount, method, details, status)
+        INSERT INTO withdrawals (user_id, amount, method, wallet, status)
         VALUES (?, ?, ?, ?, 'pending')
         """,
         (int(user_id), float(amount), method, wallet),
@@ -826,7 +826,7 @@ async def create_withdrawal(db: aiosqlite.Connection, user_id: int, amount: floa
 async def list_withdrawals(db: aiosqlite.Connection, status: str = "pending", limit: int = 20):
     async with db.execute(
             """
-        SELECT w.id, w.user_id, u.username, w.amount, w.method, w.details, w.status, w.created_at
+        SELECT w.id, w.user_id, u.username, w.amount, w.method, w.wallet, w.status, w.created_at
         FROM withdrawals w
         LEFT JOIN users u ON u.user_id = w.user_id
         WHERE w.status = ?
@@ -840,7 +840,7 @@ async def list_withdrawals(db: aiosqlite.Connection, status: str = "pending", li
 async def get_withdrawal(db: aiosqlite.Connection, withdrawal_id: int):
     async with db.execute(
             """
-        SELECT w.id, w.user_id, u.username, w.amount, w.method, w.details, w.status, w.created_at
+        SELECT w.id, w.user_id, u.username, w.amount, w.method, w.wallet, w.status, w.created_at
         FROM withdrawals w
         LEFT JOIN users u ON u.user_id = w.user_id
         WHERE w.id = ?
@@ -1090,31 +1090,31 @@ async def user_created_hours_ago(db: aiosqlite.Connection, user_id: int) -> floa
 async def wallet_used_by_another_user(
         db: aiosqlite.Connection,
         user_id: int,
-        details: str,
+        wallet: str,
 ) -> bool:
     async with db.execute(
             """
         SELECT 1
         FROM withdrawals
         WHERE method = 'ton'
-          AND details = ?
+          AND wallet = ?
           AND user_id != ?
         LIMIT 1
         """,
-            (details.strip(), int(user_id)),
+            (wallet.strip(), int(user_id)),
     ) as cur:
         return await cur.fetchone() is not None
 
-async def wallet_users(db, details: str) -> list[str]:
+async def wallet_users(db, wallet: str) -> list[str]:
     async with db.execute(
             """
         SELECT DISTINCT w.user_id, u.username
         FROM withdrawals w
         LEFT JOIN users u ON u.user_id = w.user_id
-        WHERE w.details = ?
+        WHERE w.wallet = ?
         ORDER BY w.user_id ASC
         """,
-            (details.strip(),)
+            (wallet.strip(),)
     ) as cur:
         rows = await cur.fetchall()
 

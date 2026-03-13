@@ -722,12 +722,12 @@ async def _render_withdraw_card(callback: CallbackQuery, wid: int, db):
         await callback.answer("❌ Заявка не найдена", show_alert=True)
         return
 
-    _id, user_id, username, amount, method, details, status, created_at = (
+    _id, user_id, username, amount, method, wallet, status, created_at = (
         row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
     )
 
     name = f"@{username}" if username else f"id:{user_id}"
-    det = details or "—"
+    det = wallet or "—"
 
     await callback.message.edit_text(
         f"💸 Заявка #{_id}\n\n"
@@ -760,7 +760,7 @@ async def adm_withdraw_paid(callback: CallbackQuery, db):
         await callback.answer("❌ Заявка не найдена", show_alert=True)
         return
 
-    _id, user_id, username, amount, method, details, status, created_at = (
+    _id, user_id, username, amount, method, wallet, status, created_at = (
         row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
     )
 
@@ -912,7 +912,7 @@ async def adm_withdraw_reject(callback: CallbackQuery, db):
         await callback.answer("❌ Заявка не найдена", show_alert=True)
         return
 
-    _id, user_id, username, amount, method, details, status, created_at = (
+    _id, user_id, username, amount, method, wallet, status, created_at = (
         row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
     )
 

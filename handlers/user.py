@@ -500,13 +500,13 @@ async def finalize_withdraw_request(
         user_id: int,
         amount: float,
         method: str,
-        details: Optional[str] = None,
+        wallet: Optional[str] = None,
         paid_fee: int = 0,
         fee_payment_charge_id: Optional[str] = None,
         fee_invoice_payload: Optional[str] = None,
 ):
     async with tx(db):
-        wid = await create_withdrawal(db, user_id, amount, method=method, details=details)
+        wid = await create_withdrawal(db, user_id, amount, method=method, wallet=wallet)
 
         await db.execute(
             """
@@ -562,8 +562,8 @@ async def finalize_withdraw_request(
         f"🔧 {method.upper()}\n"
     )
 
-    if details:
-        admin_text += f"🧾 {details}\n"
+    if wallet:
+        admin_text += f"🧾 {wallet}\n"
 
     if paid_fee > 0:
         admin_text += f"💳 Комиссия оплачена: {paid_fee} XTR\n"
@@ -577,16 +577,16 @@ async def finalize_withdraw_request(
         except Exception:
             pass
 
-        if method == "ton" and details:
-            wallet_abuse = await wallet_used_by_another_user(db, user_id, details)
+        if method == "ton" and wallet:
+            wallet_abuse = await wallet_used_by_another_user(db, user_id, wallet)
             if wallet_abuse:
-                used_by = await wallet_users(db, details)
+                used_by = await wallet_users(db, wallet)
                 used_by_text = "\n".join(used_by) if used_by else "нет данных"
 
                 abuse_text = (
                     f"🚨 Подозрение на мультиаккаунт\n\n"
                     f"Новый пользователь: @{message.from_user.username or 'no_username'} (id={user_id})\n"
-                    f"Кошелек:\n{details}\n\n"
+                    f"Кошелек:\n{wallet}\n\n"
                     f"Уже использовали:\n{used_by_text}"
                 )
 
@@ -606,8 +606,8 @@ async def finalize_withdraw_request(
         f"Способ: {'Telegram Stars' if method == 'stars' else 'TON'}\n"
     )
 
-    if details:
-        success_text += f"Кошелёк: {details}\n"
+    if wallet:
+        success_text += f"Кошелёк: {wallet}\n"
 
     if paid_fee > 0:
         success_text += f"Комиссия оплачена: {paid_fee} XTR\n"
@@ -624,7 +624,7 @@ async def start_fee_payment_or_create(
         user_id: int,
         amount: float,
         method: str,
-        details: Optional[str] = None,
+        wallet: Optional[str] = None,
 ):
     error_text = await validate_withdraw_rules(db, user_id, amount)
     if error_text:
@@ -643,7 +643,7 @@ async def start_fee_payment_or_create(
                 user_id=user_id,
                 amount=amount,
                 method=method,
-                details=details,
+                wallet=wallet,
                 paid_fee=0,
                 fee_payment_charge_id=None,
                 fee_invoice_payload=None,
@@ -658,7 +658,7 @@ async def start_fee_payment_or_create(
     await state.update_data(
         amount=amount,
         method=method,
-        details=details,
+        wallet=wallet,
         withdraw_fee=fee,
     )
     await state.set_state(WithdrawCreate.fee_payment)
@@ -736,7 +736,7 @@ async def withdraw_stars_fixed_amount(callback: CallbackQuery, state: FSMContext
                 user_id=user_id,
                 amount=amount,
                 method="stars",
-                details=None,
+                wallet=None,
                 paid_fee=0,
                 fee_payment_charge_id=None,
                 fee_invoice_payload=None,
@@ -751,7 +751,7 @@ async def withdraw_stars_fixed_amount(callback: CallbackQuery, state: FSMContext
     await state.update_data(
         amount=amount,
         method="stars",
-        details=None,
+        wallet=None,
         withdraw_fee=fee,
     )
     await state.set_state(WithdrawCreate.fee_payment)
@@ -790,21 +790,21 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
         return
 
     await state.update_data(amount=amount)
-    await state.set_state(WithdrawCreate.details)
+    await state.set_state(WithdrawCreate.wallet)
     await message.answer("Введи TON-адрес кошелька для выплаты:")
 
-@router.message(WithdrawCreate.details)
+@router.message(WithdrawCreate.wallet)
 async def withdraw_enter_details(message: Message, state: FSMContext, db):
     user_id = message.from_user.id
     data = await state.get_data()
     amount = float(data["amount"])
-    details = message.text.strip()
+    wallet = message.text.strip()
 
-    if len(details) < 10:
+    if len(wallet) < 10:
         await message.answer("❌ Похоже на неправильный TON-адрес. Введи ещё раз.")
         return
 
-    await state.update_data(details=details)
+    await state.update_data(wallet=wallet)
 
     await start_fee_payment_or_create(
         message=message,
@@ -813,7 +813,7 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
         user_id=user_id,
         amount=amount,
         method="ton",
-        details=details,
+        wallet=wallet,
     )
 
 
@@ -869,7 +869,7 @@ async def on_successful_payment(message: Message, state: FSMContext, db):
 
     amount = float(data.get("amount") or 0)
     method = data.get("method")
-    details = data.get("details")
+    wallet = data.get("wallet")
     fee = int(data.get("withdraw_fee") or 0)
 
     if amount <= 0 or method not in {"stars", "ton"}:
@@ -901,7 +901,7 @@ async def on_successful_payment(message: Message, state: FSMContext, db):
             user_id=user_id,
             amount=amount,
             method=method,
-            details=details,
+            wallet=wallet,
             paid_fee=fee,
             fee_payment_charge_id=payment.telegram_payment_charge_id,
             fee_invoice_payload=payment.invoice_payload,
