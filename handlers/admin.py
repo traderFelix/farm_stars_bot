@@ -17,7 +17,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from config import ADMIN_IDS, LEDGER_PAGE_SIZE
 
-from handlers.user import menu_text, is_admin
+from handlers.user import menu_text, is_admin, safe_edit_text
 
 from db import (
     tx, fmt_stars,
@@ -131,7 +131,7 @@ def _user_ledger_nav_kb(user_id: int, page: int, has_next: bool) -> InlineKeyboa
 async def _render_campaign_card(callback: CallbackQuery, key: str, db):
     row = await get_campaign(db, key)
     if not row:
-        await callback.message.edit_text("❌ Конкурс не найден.", reply_markup=admin_back_kb())
+        await safe_edit_text(callback.message, "❌ Конкурс не найден.", reply_markup=admin_back_kb())
         return
 
     _k, title, amount, status = row[0], row[1], row[2], row[3]
@@ -145,19 +145,17 @@ async def _render_campaign_card(callback: CallbackQuery, key: str, db):
     else:
         status_text = f"⚪ {status}"
 
-    await callback.message.edit_text(
-        f"🏷 {key}\n"
-        f"📝 {title}\n"
-        f"🎁 Награда: {amount}⭐\n"
-        f"📌 Статус: {status_text}",
-        reply_markup=campaign_manage_kb(key, status),
-    )
+    text = f"🏷 {key}\n" \
+            f"📝 {title}\n" \
+            f"🎁 Награда: {amount}⭐\n" \
+            f"📌 Статус: {status_text}"
+    await safe_edit_text(callback.message, text, reply_markup=campaign_manage_kb(key, status))
 
 
 @router.callback_query(F.data == "adm:back")
 async def adm_back(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("🛠 Админ-панель", reply_markup=admin_menu_kb())
+    await safe_edit_text(callback.message, "🛠 Админ-панель", reply_markup=admin_menu_kb())
 
 
 @router.callback_query(F.data == "adm:close")
@@ -167,7 +165,8 @@ async def adm_close(callback: CallbackQuery, db):
     user_id = callback.from_user.id
     balance = await get_balance(db, user_id)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         menu_text(balance),
         reply_markup=main_menu(is_admin(user_id))
     )
@@ -179,10 +178,10 @@ async def adm_list(callback: CallbackQuery, db):
 
     rows = await list_campaigns(db)
     if not rows:
-        await callback.message.edit_text("Пока нет конкурсов.", reply_markup=admin_back_kb())
+        await safe_edit_text(callback.message, "Пока нет конкурсов.", reply_markup=admin_back_kb())
         return
 
-    await callback.message.edit_text("📋 Список всех конкурсов:", reply_markup=campaigns_list_kb(rows))
+    await safe_edit_text(callback.message, "📋 Список всех конкурсов:", reply_markup=campaigns_list_kb(rows))
 
 
 @router.callback_query(F.data.startswith("adm:open:"))
@@ -217,7 +216,8 @@ async def adm_delete_ask(callback: CallbackQuery, db):
 
     row = await get_campaign(db, key)
     if not row:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             "❌ Конкурс не найден.",
             reply_markup=admin_back_kb()
         )
@@ -225,7 +225,8 @@ async def adm_delete_ask(callback: CallbackQuery, db):
 
     _k, title, amount, status = row[0], row[1], row[2], row[3]
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"⚠️ Ты точно хочешь удалить конкурс?\n\n"
         f"KEY: {key}\n"
         f"Название: {title}\n"
@@ -283,7 +284,8 @@ async def save_winners_msg(message: Message, state: FSMContext, db):
 async def adm_new(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(CampaignCreate.key)
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "➕ Создание конкурса\n\nВведи KEY (например: march2026):",
         reply_markup=admin_back_kb(),
     )
@@ -342,7 +344,7 @@ async def adm_stats_menu(callback: CallbackQuery, db):
 
     rows = await list_campaigns_latest(db, limit=5)
     if not rows:
-        await callback.message.edit_text("Нет конкурсов", reply_markup=admin_back_kb())
+        await safe_edit_text(callback.message, "Нет конкурсов", reply_markup=admin_back_kb())
         return
 
     total_assigned_sum = await total_assigned_amount(db)
@@ -350,7 +352,8 @@ async def adm_stats_menu(callback: CallbackQuery, db):
     active_cnt, ended_cnt, draft_cnt = await campaigns_status_counts(db)
     unclaimed_sum = await unclaimed_total_amount(db)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "📊 Полная статистика:\n\n"
         f"🎁 Начислено в конкурсах: {total_assigned_sum:.2f}⭐\n"
         f"📦 Невостребовано: {unclaimed_sum:.2f}⭐\n"
@@ -379,7 +382,8 @@ async def adm_stats(callback: CallbackQuery, db):
     else:
         claimed_text = "—"
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"📊 Статистика конкурса {key}\n\n"
         f"👥 Клеймов: {claims_count}/{winners_cnt}\n"
         f"⭐ Выплачено всего: {total_paid}\n\n"
@@ -412,7 +416,8 @@ async def adm_show_winners(callback: CallbackQuery, db):
             lines.append(f"{i}. @{u}{mark}")
         text = "\n".join(lines)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"🏆 Победители конкурса {key}:\n\n{text}",
         reply_markup=back_kb
     )
@@ -421,7 +426,7 @@ async def adm_show_winners(callback: CallbackQuery, db):
 @router.callback_query(F.data == "adm:home")
 async def adm_home(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("🛠 Админ-панель", reply_markup=admin_menu_kb())
+    await safe_edit_text(callback.message, "🛠 Админ-панель", reply_markup=admin_menu_kb())
 
 
 @router.callback_query(F.data.startswith("adm:winner_del:"))
@@ -471,7 +476,7 @@ async def adm_top_balances(callback: CallbackQuery, db):
             lines.append(f"{i}. {name} — {float(balance):.2f}⭐️")
         text = "🏆 Топ-10 по балансу:\n\n" + "\n".join(lines)
 
-    await callback.message.edit_text(text, reply_markup=admin_back_kb())
+    await safe_edit_text(callback.message, text, reply_markup=admin_back_kb())
 
 
 @router.callback_query(F.data == "adm:growth_png")
@@ -536,7 +541,8 @@ async def adm_growth_png(callback: CallbackQuery, db):
 
     await callback.message.answer_photo(photo=photo, caption=caption)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "📈 График и цифры отправил сообщением выше.",
         reply_markup=admin_back_kb()
     )
@@ -569,7 +575,8 @@ async def adm_ledger_last(callback: CallbackQuery, db):
         rows = await cur.fetchall()
 
     if not rows and page == 0:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             "📜 Леджер пуст.",
             reply_markup=admin_back_kb()
         )
@@ -592,7 +599,8 @@ async def adm_ledger_last(callback: CallbackQuery, db):
             f"{i}. {created_at} — {name}: {float(delta):g}⭐ — {reason}{ck}"
         )
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"📜 Леджер, страница {page + 1}:\n\n" + "\n".join(lines),
         reply_markup=_admin_ledger_nav_kb(page, has_next),
         )
@@ -704,13 +712,15 @@ async def adm_withdraw_list(callback: CallbackQuery, db):
     rows = await list_withdrawals(db, status="pending", limit=20)
 
     if not rows:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             "✅ Нет заявок на вывод (pending).",
             reply_markup=admin_back_kb()
         )
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "💸 Заявки на вывод (pending):",
         reply_markup=admin_withdraw_list_kb(rows)
     )
@@ -729,7 +739,8 @@ async def _render_withdraw_card(callback: CallbackQuery, wid: int, db):
     name = f"@{username}" if username else f"id:{user_id}"
     det = wallet or "—"
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"💸 Заявка #{_id}\n\n"
         f"👤 {name}\n"
         f"⭐ Сумма: {float(amount):g}\n"
@@ -1024,7 +1035,8 @@ async def adm_audit_balances(callback: CallbackQuery, db):
                 f"diff={fmt_stars(diff)}⭐"
             )
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "\n".join(lines),
         reply_markup=admin_back_kb(),
     )
@@ -1040,7 +1052,8 @@ async def adm_user_details(callback: CallbackQuery, db):
     text = await build_user_details_text(db, user_id)
 
     try:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             text,
             reply_markup=admin_user_kb(user_id),
         )
@@ -1061,7 +1074,8 @@ async def adm_user_mark_susp(callback: CallbackQuery, db):
     await mark_user_suspicious(db, user_id, "Помечен администратором")
     text = await build_user_details_text(db, user_id)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         text,
         reply_markup=admin_user_kb(user_id),
     )
@@ -1079,7 +1093,8 @@ async def adm_user_clear_susp(callback: CallbackQuery, db):
     await clear_user_suspicious(db, user_id)
     text = await build_user_details_text(db, user_id)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         text,
         reply_markup=admin_user_kb(user_id),
     )
@@ -1139,7 +1154,8 @@ async def adm_user_ledger(callback: CallbackQuery, db):
             + "\n".join(lines)
     )
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         text,
         reply_markup=_user_ledger_nav_kb(user_id, page, has_next),
     )
@@ -1156,7 +1172,8 @@ async def adm_user_stats(callback: CallbackQuery, db):
     text = await build_user_stats_text(db, user_id)
 
     try:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             text,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -1182,7 +1199,8 @@ async def adm_fee_refund_menu(callback: CallbackQuery, db):
     rows = await list_recent_fee_payments(db, limit=10)
 
     if not rows:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             "↩️ Возврат комиссии\n\n"
             "Пока нет последних оплат комиссии.",
             reply_markup=admin_fee_refund_kb(),
@@ -1296,7 +1314,7 @@ async def adm_fee_refund_manual_finish(message: Message, state: FSMContext, db):
 async def _render_task_channel_card(callback: CallbackQuery, channel_id: int, db):
     row = await get_task_channel(db, channel_id)
     if not row:
-        await callback.message.edit_text("❌ Канал не найден.", reply_markup=admin_back_kb())
+        await safe_edit_text(callback.message, "❌ Канал не найден.", reply_markup=admin_back_kb())
         return
 
     stats = await task_channel_stats(db, channel_id)
@@ -1316,7 +1334,8 @@ async def _render_task_channel_card(callback: CallbackQuery, channel_id: int, db
 
     status_text = "🟢 Включен" if is_active else "🔴 Отключен"
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "📺 Канал просмотров\n\n"
         f"Название: {title}\n"
         f"ID канала: {chat_id}\n"
@@ -1339,14 +1358,16 @@ async def adm_task_channels_list(callback: CallbackQuery, db):
     rows = await list_task_channels(db)
 
     if not rows:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             "📺 Каналы просмотров\n\n"
             "Пока нет подключенных каналов.",
             reply_markup=admin_task_channels_kb([]),
         )
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "📺 Каналы просмотров\n\n"
         "Выбери канал:",
         reply_markup=admin_task_channels_kb(rows),
@@ -1357,7 +1378,8 @@ async def adm_task_channels_list(callback: CallbackQuery, db):
 async def adm_task_channel_new_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(TaskChannelCreate.chat_id)
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "➕ Подключение канала\n\n"
         "Пришли chat_id канала.\n"
         "Пример: -1001234567890",
@@ -1429,7 +1451,7 @@ async def adm_task_channel_toggle(callback: CallbackQuery, db):
 
     row = await get_task_channel(db, channel_id)
     if not row:
-        await callback.message.edit_text("❌ Канал не найден.", reply_markup=admin_back_kb())
+        await safe_edit_text(callback.message, "❌ Канал не найден.", reply_markup=admin_back_kb())
         return
 
     new_active = 0 if int(row["is_active"] or 0) == 1 else 1
@@ -1446,13 +1468,14 @@ async def adm_task_channel_edit_start(callback: CallbackQuery, state: FSMContext
 
     row = await get_task_channel(db, channel_id)
     if not row:
-        await callback.message.edit_text("❌ Канал не найден.", reply_markup=admin_back_kb())
+        await safe_edit_text(callback.message, "❌ Канал не найден.", reply_markup=admin_back_kb())
         return
 
     await state.set_state(TaskChannelEdit.total_bought_views)
     await state.update_data(channel_id=channel_id)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "⚙️ Редактирование параметров канала\n\n"
         f"Текущий chat_id: {row['chat_id']}\n"
         f"Сейчас куплено просмотров: {int(row['total_bought_views'] or 0)}\n"
@@ -1518,7 +1541,7 @@ async def adm_task_channel_posts(callback: CallbackQuery, db):
 
     channel = await get_task_channel(db, channel_id)
     if not channel:
-        await callback.message.edit_text("❌ Канал не найден.", reply_markup=admin_back_kb())
+        await safe_edit_text(callback.message, "❌ Канал не найден.", reply_markup=admin_back_kb())
         return
 
     rows = await list_task_posts_by_channel(db, channel_id, limit=20)
@@ -1526,7 +1549,8 @@ async def adm_task_channel_posts(callback: CallbackQuery, db):
     title = channel["title"] or channel["chat_id"]
 
     if not rows:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             "📊 Статус по постам\n\n"
             f"Канал: {title}\n\n"
             "Пока нет добавленных постов.",
@@ -1559,7 +1583,8 @@ async def adm_task_channel_posts(callback: CallbackQuery, db):
             + "\n".join(lines)
     )
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         text,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[

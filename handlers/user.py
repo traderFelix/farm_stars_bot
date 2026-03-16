@@ -33,6 +33,8 @@ router = Router()
 
 logger = logging.getLogger(__name__)
 
+LAST_TASK_POST_MSG_ID_KEY = "last_task_post_message_id"
+
 WITHDRAW_TEXT = f"""
 💰 <b>Вывод и обмен звёзд</b>
 
@@ -181,7 +183,8 @@ async def check_subscription(callback: CallbackQuery, bot: Bot, db):
             reply_markup=bottom_menu_kb()
         )
 
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             menu_text(balance),
             reply_markup=main_menu(is_admin(user_id))
         )
@@ -197,7 +200,8 @@ async def show_tasks(callback: CallbackQuery, db):
     balance = await get_balance(db, user_id)
     available = await count_available_task_posts_for_user(db, user_id)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "📋 Задания\n\n"
         "👁 Просмотр постов из каналов\n"
         "За каждый просмотр начисляется награда.\n"
@@ -208,25 +212,25 @@ async def show_tasks(callback: CallbackQuery, db):
 
 
 @router.callback_query(F.data == "task:view_post")
-async def task_view_post(callback: CallbackQuery, bot: Bot, db):
+async def task_view_post(callback: CallbackQuery, bot: Bot, state: FSMContext, db):
     user_id = callback.from_user.id
 
     async with tx(db, immediate=False):
         await ensure_user_registered(callback, db)
 
-    row = await get_next_task_post_for_user(db, user_id)
-    if not row:
-        await callback.answer("❌ Доступных постов пока нет.", show_alert=True)
-        return
+        row = await get_next_task_post_for_user(db, user_id)
+        if not row:
+            await callback.answer("❌ Доступных постов пока нет.", show_alert=True)
+            return
 
-    view_seconds = int(row["view_seconds"])
+        view_seconds = int(row["view_seconds"])
 
-    recent_clicks = await count_recent_abuse_events(db, user_id, "task_view_click", 1)
-    if recent_clicks >= 60 / view_seconds:
-        await callback.answer("⏳ Слишком часто. Попробуй через минуту.", show_alert=True)
-        return
+        recent_clicks = await count_recent_abuse_events(db, user_id, "task_view_click", 1)
+        if recent_clicks >= 60 / view_seconds:
+            await callback.answer("⏳ Слишком часто. Попробуй через минуту.", show_alert=True)
+            return
 
-    await log_abuse_event(db, user_id, "task_view_click")
+        await log_abuse_event(db, user_id, "task_view_click")
 
     task_post_id = int(row["id"])
     from_chat_id = row["chat_id"]
@@ -234,6 +238,8 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
     reward = float(row["reward"] or 0)
 
     await callback.answer("Показываю пост...")
+
+    await _delete_last_task_post(bot, user_id, state)
 
     try:
         await callback.message.delete()
@@ -256,12 +262,9 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
         )
         return
 
-    await asyncio.sleep(view_seconds)
+    await state.update_data(**{LAST_TASK_POST_MSG_ID_KEY: sent.message_id})
 
-    try:
-        await bot.delete_message(chat_id=user_id, message_id=sent.message_id)
-    except Exception:
-        pass
+    await asyncio.sleep(view_seconds)
 
     async with tx(db, immediate=True):
         current_row = await get_specific_task_post_for_user(db, user_id, task_post_id)
@@ -307,8 +310,8 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
             meta=f"task_post:{task_post_id}:channel_post:{channel_post_id}",
         )
 
-    new_balance = await get_balance(db, user_id)
-    available = await count_available_task_posts_for_user(db, user_id)
+        new_balance = await get_balance(db, user_id)
+        available = await count_available_task_posts_for_user(db, user_id)
 
     await bot.send_message(
         chat_id=user_id,
@@ -323,11 +326,18 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, db):
 
 
 @router.callback_query(F.data == "back")
-async def back_to_main(callback: CallbackQuery, db):
+async def back_to_main(callback: CallbackQuery, bot: Bot, state: FSMContext, db):
     user_id = callback.from_user.id
     balance = await get_balance(db, user_id)
+
+    await _delete_last_task_post(bot, user_id, state)
+
     await callback.answer()
-    await callback.message.edit_text(menu_text(balance), reply_markup=main_menu(is_admin(user_id)))
+    await safe_edit_text(
+        callback.message,
+        menu_text(balance),
+        reply_markup=main_menu(is_admin(user_id))
+    )
 
 
 @router.callback_query(F.data == "claim")
@@ -356,10 +366,11 @@ async def claim_menu(callback: CallbackQuery, db):
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     if callback.message.text == text:
-        await callback.message.edit_reply_markup(reply_markup=markup)
+        await safe_edit_reply_markup(callback.message, reply_markup=markup)
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         text,
         reply_markup=markup,
     )
@@ -410,7 +421,8 @@ async def withdraw_menu(callback: CallbackQuery, state: FSMContext, db):
     user_id = callback.from_user.id
     balance = await get_balance(db, user_id)
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "Меню заявок на вывод\n\n"
         f"Доступно: {fmt_stars(balance)}⭐",
         reply_markup=withdraw_menu_kb()
@@ -694,7 +706,8 @@ async def withdraw_choose_method(callback: CallbackQuery, state: FSMContext, db)
     await state.update_data(method=method)
 
     if method == "stars":
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             "Выбери сумму вывода ⭐:\n\n"
             f"Доступно: {fmt_stars(balance)}⭐\n"
             f"Минимум: {MIN_WITHDRAW:g}⭐",
@@ -927,7 +940,8 @@ async def withdraw_my(callback: CallbackQuery, db):
     rows = await user_withdrawals(db, user_id, limit=20)
 
     if not rows:
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             "📜 Мои заявки\n\n"
             "📭 У тебя пока нет заявок на вывод.",
             reply_markup=withdraw_back_kb()
@@ -948,7 +962,8 @@ async def withdraw_my(callback: CallbackQuery, db):
             f"{created}"
         )
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "📜 Мои заявки\n\n" + "\n\n".join(lines),
         reply_markup=withdraw_back_kb()
     )
@@ -975,3 +990,32 @@ async def show_referrals(callback: CallbackQuery, db):
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
+
+async def _delete_last_task_post(bot: Bot, user_id: int, state: FSMContext) -> None:
+    data = await state.get_data()
+    last_msg_id = data.get(LAST_TASK_POST_MSG_ID_KEY)
+    if not last_msg_id:
+        return
+
+    try:
+        await bot.delete_message(chat_id=user_id, message_id=int(last_msg_id))
+    except Exception:
+        pass
+
+    await state.update_data(**{LAST_TASK_POST_MSG_ID_KEY: None})
+
+async def safe_edit_text(message, text: str, reply_markup=None):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        raise
+
+async def safe_edit_reply_markup(message, reply_markup=None):
+    try:
+        await message.edit_reply_markup(reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        raise
