@@ -2,7 +2,7 @@ import asyncio, logging
 
 from typing import Optional
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.enums import ParseMode
@@ -1120,6 +1120,8 @@ async def daily_checkin_open(callback: CallbackQuery, db):
     last_checkin_raw = row["last_daily_checkin_at"]
 
     today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+
     last_date = None
 
     if last_checkin_raw:
@@ -1130,7 +1132,7 @@ async def daily_checkin_open(callback: CallbackQuery, db):
     if already_claimed_today:
         current_day = stored_day if stored_day > 0 else 1
     else:
-        if last_date == today.fromordinal(today.toordinal() - 1):
+        if last_date == yesterday:
             current_day = stored_day + 1 if stored_day < 30 else 1
         else:
             current_day = 1
