@@ -25,7 +25,8 @@ def subscribe_keyboard() -> InlineKeyboardMarkup:
 
 def main_menu(role_level: int = 0) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="🎁 Забрать награду", callback_data="claim")],
+        [InlineKeyboardButton(text="🎁 Ежедневный бонус", callback_data="daily_checkin")],
+        [InlineKeyboardButton(text="🧸 Награда за конкурс", callback_data="claim")],
         [InlineKeyboardButton(text="📋 Задания", callback_data="tasks")],
         [InlineKeyboardButton(text="👛 Вывод", callback_data="withdraw")],
         [InlineKeyboardButton(text="🫂 Пригласить друга", callback_data="referrals")],
@@ -292,3 +293,49 @@ def admin_growth_photo_kb(origin_message_id: int) -> InlineKeyboardMarkup:
         ]
     )
 
+def daily_checkin_kb(
+        current_day: int,
+        already_claimed_today: bool,
+) -> InlineKeyboardMarkup:
+    rows = []
+    day = 1
+
+    for _ in range(5):
+        row = []
+        for _ in range(6):
+            if day < current_day:
+                text = f"✅ {day}"
+            elif day == current_day:
+                text = f"🎁 {day}" if already_claimed_today else f"🔥 {day}"
+            else:
+                text = str(day)
+
+            row.append(
+                InlineKeyboardButton(
+                    text=text,
+                    callback_data="daily_checkin:noop",
+                )
+            )
+            day += 1
+        rows.append(row)
+
+    if already_claimed_today:
+        rows.append([
+            InlineKeyboardButton(
+                text="✅ Бонус получен",
+                callback_data="daily_checkin:noop",
+            )
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(
+                text="🎁 Забрать бонус",
+                callback_data="daily_checkin:claim",
+            )
+        ])
+
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="back")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
