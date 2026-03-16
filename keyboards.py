@@ -1,6 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from config import CHANNEL_LINK
+from config import CHANNEL_LINK, ROLE_CLIENT, ROLE_PARTNER, ROLE_ADMIN
 
 def bottom_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -23,15 +23,20 @@ def subscribe_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
-def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
+def main_menu(role_level: int = 0) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="🎁 Забрать награду", callback_data="claim")],
         [InlineKeyboardButton(text="📋 Задания", callback_data="tasks")],
         [InlineKeyboardButton(text="👛 Вывод", callback_data="withdraw")],
         [InlineKeyboardButton(text="🫂 Пригласить друга", callback_data="referrals")],
     ]
-    if is_admin:
-        rows.append([InlineKeyboardButton(text="🛠 Админка", callback_data="adm:home")])
+    if role_level >= ROLE_CLIENT:
+        rows.append([InlineKeyboardButton(text="🤝 Кабинет клиента", callback_data="client:home")])
+    if role_level >= ROLE_PARTNER:
+        rows.append([InlineKeyboardButton(text="💼 Кабинет парнера", callback_data="partner:home")])
+    if role_level >= ROLE_ADMIN:
+        rows.append([InlineKeyboardButton(text="🔐 Админка", callback_data="adm:home")])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def referrals_kb() -> InlineKeyboardMarkup:
@@ -92,7 +97,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="💸 Заявки на вывод", callback_data="adm:wd:list")],
             [InlineKeyboardButton(text="↩️ Возврат комсы", callback_data="adm:fee_refund_menu")],
             [InlineKeyboardButton(text="🧮 Сверка балансов", callback_data="adm:audit")],
-            [InlineKeyboardButton(text="⛔ Закрыть", callback_data="adm:close")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="back")],
         ]
     )
 

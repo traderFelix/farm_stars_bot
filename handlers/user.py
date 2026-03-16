@@ -11,7 +11,9 @@ from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, PreCheckoutQuery, LabeledPrice
 )
 
-from config import CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENT
+from config import (
+    CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENT, ROLE_USER, ROLE_CLIENT, ROLE_PARTNER,
+)
 
 from db import (
     sum_recent_abuse_amount, has_pending_withdrawal, user_created_hours_ago, get_user_earnings_breakdown,
@@ -20,6 +22,7 @@ from db import (
     wallet_used_by_another_user, wallet_users, ensure_user_registered, xtr_ledger_add, apply_balance_delta,
     increment_task_post_views, count_available_task_posts_for_user, get_next_task_post_for_user, bind_referrer,
     get_specific_task_post_for_user, add_task_post_view, allocate_task_post_from_channel_post, get_referrals_count,
+    get_user_role_level, user_has_role, role_title_from_level
 )
 
 from keyboards import (
@@ -36,10 +39,10 @@ logger = logging.getLogger(__name__)
 LAST_TASK_POST_MSG_ID_KEY = "last_task_post_message_id"
 
 WITHDRAW_TEXT = f"""
-💰 <b>Вывод и обмен звёзд</b>
+💰 <b>Вывод и обмен звезд</b>
 
 🔷 Минимальная сумма вывода и обмена <b>{MIN_WITHDRAW}⭐</b>
-🔷 Конвертация звёзд в TON производится по курсу на сайте <b>Fragment</b>
+🔷 Конвертация звезд в TON производится по курсу на сайте <b>Fragment</b>
 🔷 Для вывода необходимо, чтобы минимум <b>{MIN_WITHDRAW_PERCENT * 100:.0f}%</b> звезд на балансе были добыты путем выполнения заданий
 
 <blockquote>
@@ -50,18 +53,20 @@ WITHDRAW_TEXT = f"""
 ▪️ 200⭐ — комиссия <b>3 Telegram Stars</b>
 ▪️ 500⭐ — <b>без комиссии</b>
 
-💡 Комиссия списывается <b>только с баланса Telegram Stars</b>, а не с игрового баланса звёзд
+💡 Комиссия списывается <b>только с баланса Telegram Stars</b>, а не с игрового баланса звезд
 </blockquote>
 
 Выберите нужный вариант ниже! 👇
 """
 
-def menu_text(balance: float) -> str:
-    return "Чтобы получить больше ⭐️, выполняйте задания\n\n" + f"Баланс: {fmt_stars(balance)}⭐️"
+def menu_text(balance: float, role_level: int = ROLE_USER) -> str:
+    role_name = role_title_from_level(role_level)
 
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+    return (
+        "Чтобы получить больше ⭐️, выполняйте задания\n\n"
+        f"Роль: {role_name}\n"
+        f"Баланс: {fmt_stars(balance)}⭐️"
+    )
 
 @router.channel_post()
 async def ingest_task_channel_post(message: Message, db):
@@ -94,10 +99,11 @@ async def open_main_menu_from_bottom_button(message: Message, state: FSMContext,
 
     user_id = message.from_user.id
     balance = await get_balance(db, user_id)
+    role_level = await get_user_role_level(db, user_id)
 
     await message.answer(
-        menu_text(balance),
-        reply_markup=main_menu(is_admin(user_id)),
+        menu_text(balance, role_level),
+        reply_markup=main_menu(role_level)
     )
 
 
@@ -143,6 +149,7 @@ async def start(message: Message, bot: Bot, db):
     try:
         if member.status in ("member", "administrator", "creator"):
             balance = await get_balance(db, user_id)
+            role_level = await get_user_role_level(db, user_id)
 
             await message.answer(
                 "Нажми кнопку снизу, чтобы открыть меню 👇",
@@ -150,8 +157,8 @@ async def start(message: Message, bot: Bot, db):
             )
 
             await message.answer(
-                menu_text(balance),
-                reply_markup=main_menu(is_admin(user_id))
+                menu_text(balance, role_level),
+                reply_markup=main_menu(role_level)
             )
         else:
             await message.answer(
@@ -177,6 +184,7 @@ async def check_subscription(callback: CallbackQuery, bot: Bot, db):
 
     if member.status in ("member", "administrator", "creator"):
         balance = await get_balance(db, user_id)
+        role_level = await get_user_role_level(db, user_id)
 
         await callback.message.answer(
             "Нажми кнопку снизу, чтобы открыть меню 👇",
@@ -185,11 +193,11 @@ async def check_subscription(callback: CallbackQuery, bot: Bot, db):
 
         await safe_edit_text(
             callback.message,
-            menu_text(balance),
-            reply_markup=main_menu(is_admin(user_id))
+            menu_text(balance, role_level),
+            reply_markup=main_menu(role_level)
         )
     else:
-        await callback.answer("❌ Ты ещё не подписан!", show_alert=True)
+        await callback.answer("❌ Ты еще не подписан!", show_alert=True)
 
 
 @router.callback_query(F.data == "tasks")
@@ -329,14 +337,15 @@ async def task_view_post(callback: CallbackQuery, bot: Bot, state: FSMContext, d
 async def back_to_main(callback: CallbackQuery, bot: Bot, state: FSMContext, db):
     user_id = callback.from_user.id
     balance = await get_balance(db, user_id)
+    role_level = await get_user_role_level(db, user_id)
 
     await _delete_last_task_post(bot, user_id, state)
 
     await callback.answer()
     await safe_edit_text(
         callback.message,
-        menu_text(balance),
-        reply_markup=main_menu(is_admin(user_id))
+        menu_text(balance, role_level),
+        reply_markup=main_menu(role_level)
     )
 
 
@@ -467,7 +476,7 @@ async def validate_withdraw_rules(db, user_id: int, amount: float) -> Optional[s
         return f"❌ Минимальная сумма вывода: {MIN_WITHDRAW:g}⭐"
 
     if amount > balance:
-        return "❌ Недостаточно звёзд на балансе"
+        return "❌ Недостаточно звезд на балансе"
 
     user_age_hours = await user_created_hours_ago(db, user_id)
     if user_age_hours < 24:
@@ -496,10 +505,10 @@ async def validate_withdraw_rules(db, user_id: int, amount: float) -> Optional[s
         need_more = max(0.0, total * MIN_WITHDRAW_PERCENT - tasks)
         return (
             "🚫 Вывод пока недоступен\n\n"
-            f"Для вывода минимум {MIN_WITHDRAW_PERCENT * 100:.0f}% всех полученных звёзд должны быть добыты через задания.\n\n"
+            f"Для вывода минимум {MIN_WITHDRAW_PERCENT * 100:.0f}% всех полученных звезд должны быть добыты через задания.\n\n"
             f"• Всего получено: {total:.2f}⭐\n"
             f"• Через задания: {tasks:.2f}⭐ ({tasks_pct * 100:.1f}%)\n"
-            f"• Нужно добрать ещё: {need_more:.2f}⭐"
+            f"• Нужно добрать еще: {need_more:.2f}⭐"
         )
 
     return None
@@ -619,7 +628,7 @@ async def finalize_withdraw_request(
     )
 
     if wallet:
-        success_text += f"Кошелёк: {wallet}\n"
+        success_text += f"Кошелек: {wallet}\n"
 
     if paid_fee > 0:
         success_text += f"Комиссия оплачена: {paid_fee} XTR\n"
@@ -662,7 +671,7 @@ async def start_fee_payment_or_create(
             )
         except Exception as e:
             if isinstance(e, ValueError) and str(e) == "insufficient_balance":
-                await message.answer("❌ Недостаточно звёзд на балансе")
+                await message.answer("❌ Недостаточно звезд на балансе")
                 return
             await message.answer(f"❌ Ошибка создания заявки: {type(e).__name__}: {e}")
         return
@@ -756,7 +765,7 @@ async def withdraw_stars_fixed_amount(callback: CallbackQuery, state: FSMContext
             )
         except Exception as e:
             if isinstance(e, ValueError) and str(e) == "insufficient_balance":
-                await callback.message.answer("❌ Недостаточно звёзд на балансе")
+                await callback.message.answer("❌ Недостаточно звезд на балансе")
                 return
             await callback.message.answer(f"❌ Ошибка создания заявки: {type(e).__name__}: {e}")
         return
@@ -791,7 +800,7 @@ async def withdraw_enter_amount(message: Message, state: FSMContext, db):
 
     if method != "ton":
         await state.clear()
-        await message.answer("❌ Для вывода в звёздах используй кнопки с фиксированной суммой.")
+        await message.answer("❌ Для вывода в звездах используй кнопки с фиксированной суммой.")
         return
 
     try:
@@ -814,7 +823,7 @@ async def withdraw_enter_details(message: Message, state: FSMContext, db):
     wallet = message.text.strip()
 
     if len(wallet) < 10:
-        await message.answer("❌ Похоже на неправильный TON-адрес. Введи ещё раз.")
+        await message.answer("❌ Похоже на неправильный TON-адрес. Введи еще раз.")
         return
 
     await state.update_data(wallet=wallet)
@@ -922,7 +931,7 @@ async def on_successful_payment(message: Message, state: FSMContext, db):
     except Exception as e:
         if isinstance(e, ValueError) and str(e) == "insufficient_balance":
             await message.answer(
-                "⚠️ Комиссия оплачена, но на момент создания заявки на балансе уже не хватило звёзд.\n\n"
+                "⚠️ Комиссия оплачена, но на момент создания заявки на балансе уже не хватило звезд.\n\n"
                 "Напишите администратору."
             )
             return
@@ -1019,3 +1028,52 @@ async def safe_edit_reply_markup(message, reply_markup=None):
         if "message is not modified" in str(e):
             return
         raise
+
+@router.callback_query(F.data == "client:home")
+async def client_home(callback: CallbackQuery, db):
+    user_id = callback.from_user.id
+
+    if not await user_has_role(db, user_id, ROLE_CLIENT):
+        await callback.answer("❌ Раздел клиента тебе пока недоступен.", show_alert=True)
+        return
+
+    await callback.answer()
+    await callback.message.edit_text(
+        "🤝 <b>Кабинет клиента</b>\n\n"
+        "Тут потом будут:\n"
+        "• мои заказы\n"
+        "• запуск просмотров\n"
+        "• запуск подписок\n"
+        "• статистика заказов",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅ Назад", callback_data="back")]
+            ]
+        )
+    )
+
+
+@router.callback_query(F.data == "partner:home")
+async def partner_home(callback: CallbackQuery, db):
+    user_id = callback.from_user.id
+
+    if not await user_has_role(db, user_id, ROLE_PARTNER):
+        await callback.answer("❌ Партнерский раздел тебе пока недоступен.", show_alert=True)
+        return
+
+    await callback.answer()
+    await callback.message.edit_text(
+        "💼 <b>Кабинет партнера</b>\n\n"
+        "Тут потом будут:\n"
+        "• приглашенные клиенты\n"
+        "• приглашенные юзеры\n"
+        "• проценты / бонусы\n"
+        "• партнерская статистика",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅ Назад", callback_data="back")]
+            ]
+        )
+    )
