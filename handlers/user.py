@@ -2,6 +2,7 @@ import asyncio, logging
 
 from typing import Optional
 
+from datetime import datetime
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.enums import ParseMode
@@ -22,12 +23,12 @@ from db import (
     wallet_used_by_another_user, wallet_users, ensure_user_registered, xtr_ledger_add, apply_balance_delta,
     increment_task_post_views, count_available_task_posts_for_user, get_next_task_post_for_user, bind_referrer,
     get_specific_task_post_for_user, add_task_post_view, allocate_task_post_from_channel_post, get_referrals_count,
-    get_user_role_level, user_has_role, role_title_from_level
+    get_user_role_level, user_has_role, role_title_from_level, claim_daily_checkin,
 )
 
 from keyboards import (
     subscribe_keyboard, main_menu, tasks_menu, bottom_menu_kb, withdraw_stars_amount_kb, task_after_view_kb,
-    withdraw_method_kb, withdraw_menu_kb, withdraw_back_kb, referrals_kb
+    withdraw_method_kb, withdraw_menu_kb, withdraw_back_kb, referrals_kb, daily_checkin_kb
 )
 
 from states import WithdrawCreate
@@ -1077,3 +1078,115 @@ async def partner_home(callback: CallbackQuery, db):
             ]
         )
     )
+
+def daily_checkin_text(current_day: int, already_claimed_today: bool) -> str:
+    current_day = max(1, min(current_day, 30))
+    next_day = 1 if current_day >= 30 else current_day + 1
+
+    current_reward = round(current_day * 0.05, 2)
+    next_reward = round(next_day * 0.05, 2)
+
+    status = "✅ Сегодня бонус уже получен" if already_claimed_today else "🎁 Сегодня бонус доступен"
+
+    return (
+        "🎁 Ежедневный бонус\n\n"
+        f"{status}\n"
+        f"🔥 День цикла: {current_day}/30\n"
+        f"💰 Сегодня: {fmt_stars(current_reward)}⭐\n"
+        f"⏭ Завтра: {fmt_stars(next_reward)}⭐\n\n"
+        "Заходите каждый день, чтобы не сбросить цикл."
+    )
+
+@router.callback_query(F.data == "daily_checkin")
+async def daily_checkin_open(callback: CallbackQuery, db):
+    await register_user(
+        db,
+        callback.from_user.id,
+        callback.from_user.username,
+        callback.from_user.first_name,
+        callback.from_user.last_name,
+    )
+
+    async with db.execute(
+            """
+        SELECT daily_checkin_streak, last_daily_checkin_at
+        FROM users
+        WHERE user_id = ?
+        """,
+            (callback.from_user.id,),
+    ) as cur:
+        row = await cur.fetchone()
+
+    stored_day = int(row["daily_checkin_streak"] or 0)
+    last_checkin_raw = row["last_daily_checkin_at"]
+
+    today = datetime.utcnow().date()
+    last_date = None
+
+    if last_checkin_raw:
+        last_date = datetime.fromisoformat(last_checkin_raw).date()
+
+    already_claimed_today = last_date == today
+
+    if already_claimed_today:
+        current_day = stored_day if stored_day > 0 else 1
+    else:
+        if last_date == today.fromordinal(today.toordinal() - 1):
+            current_day = stored_day + 1 if stored_day < 30 else 1
+        else:
+            current_day = 1
+
+    await callback.answer()
+
+    await safe_edit_text(
+        callback.message,
+        daily_checkin_text(
+            current_day=current_day,
+            already_claimed_today=already_claimed_today,
+        ),
+        reply_markup=daily_checkin_kb(
+            current_day=current_day,
+            already_claimed_today=already_claimed_today,
+        ),
+    )
+
+@router.callback_query(F.data == "daily_checkin:noop")
+async def daily_checkin_noop(callback: CallbackQuery):
+    await callback.answer()
+
+@router.callback_query(F.data == "daily_checkin:claim")
+async def daily_checkin_claim(callback: CallbackQuery, db):
+    ok, alert_text, _balance = await claim_daily_checkin(
+        db=db,
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+        first_name=callback.from_user.first_name,
+        last_name=callback.from_user.last_name,
+    )
+
+    await callback.answer(alert_text, show_alert=True)
+
+    async with db.execute(
+            """
+        SELECT daily_checkin_streak, last_daily_checkin_at
+        FROM users
+        WHERE user_id = ?
+        """,
+            (callback.from_user.id,),
+    ) as cur:
+        row = await cur.fetchone()
+
+    current_day = int(row["daily_checkin_streak"] or 1)
+
+    await safe_edit_text(
+        callback.message,
+        daily_checkin_text(
+            current_day=current_day,
+            already_claimed_today=True,
+        ),
+        reply_markup=daily_checkin_kb(
+            current_day=current_day,
+            already_claimed_today=True,
+        ),
+    )
+

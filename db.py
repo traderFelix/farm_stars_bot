@@ -1,5 +1,6 @@
-import aiosqlite, uuid, asyncio, logging
+import aiosqlite, uuid, asyncio, logging, json
 
+from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
 from config import (
@@ -158,6 +159,8 @@ async def init_db(db: aiosqlite.Connection) -> None:
           referred_by INTEGER,
           is_banned INTEGER DEFAULT 0,
           role_level INTEGER NOT NULL DEFAULT 0,
+          daily_checkin_streak INTEGER NOT NULL DEFAULT 0,
+          last_daily_checkin_at TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           last_seen_at TEXT DEFAULT (datetime('now'))
         );
@@ -1906,3 +1909,105 @@ async def auto_disable_task_channel_if_exhausted(
         (int(channel_id),),
     )
     return cur.rowcount == 1
+
+def normalize_daily_streak(streak: int) -> int:
+    if streak <= 0:
+        return 1
+    return ((streak - 1) % 30) + 1
+
+
+def daily_checkin_reward(streak: int) -> float:
+    streak = normalize_daily_streak(streak)
+    return round(streak * 0.05, 2)
+
+
+async def claim_daily_checkin(
+        db,
+        user_id: int,
+        username: Optional[str],
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None,
+):
+    uid = int(user_id)
+
+    now = datetime.utcnow()
+    today = now.date()
+    yesterday = today - timedelta(days=1)
+
+    async with tx(db, immediate=True):
+        await register_user(db, uid, username, first_name, last_name)
+
+        async with db.execute(
+                """
+            SELECT daily_checkin_streak, last_daily_checkin_at
+            FROM users
+            WHERE user_id = ?
+            """,
+                (uid,),
+        ) as cur:
+            row = await cur.fetchone()
+
+        streak = int(row["daily_checkin_streak"] or 0)
+        last_checkin_raw = row["last_daily_checkin_at"]
+
+        last_date = None
+        if last_checkin_raw:
+            last_date = datetime.fromisoformat(last_checkin_raw).date()
+
+        if last_date == today:
+            current_streak = normalize_daily_streak(streak)
+            next_streak = normalize_daily_streak(current_streak + 1)
+
+            current_reward = daily_checkin_reward(current_streak)
+            next_reward = daily_checkin_reward(next_streak)
+            balance = await get_balance(db, uid)
+
+            text = (
+                f"🎁 Ежедневный бонус уже получен!\n\n"
+                f"💰 Сегодняшний бонус: {fmt_stars(current_reward)}⭐\n"
+                f"⏭ Завтра будет: {fmt_stars(next_reward)}⭐\n"
+            )
+
+            return False, text, balance
+
+        if last_date == yesterday:
+            new_streak = normalize_daily_streak(streak + 1)
+        else:
+            new_streak = 1
+
+        reward = daily_checkin_reward(new_streak)
+        next_streak = normalize_daily_streak(new_streak + 1)
+        next_reward = daily_checkin_reward(next_streak)
+
+        await db.execute(
+            """
+            UPDATE users
+            SET daily_checkin_streak = ?, last_daily_checkin_at = ?
+            WHERE user_id = ?
+            """,
+            (new_streak, now.isoformat(), uid),
+        )
+
+        await apply_balance_delta(
+            db=db,
+            user_id=uid,
+            delta=reward,
+            reason="daily_checkin",
+            meta=json.dumps(
+                {
+                    "type": "daily_checkin",
+                    "streak": new_streak,
+                    "reward": reward,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        balance = await get_balance(db, uid)
+
+        text = (
+            f"🎁 Вы получили {fmt_stars(reward)}⭐\n\n"
+            f"⏭ Приходите завтра и забирайте {fmt_stars(next_reward)}⭐"
+        )
+
+        return True, text, balance
