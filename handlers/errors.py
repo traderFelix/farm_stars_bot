@@ -57,7 +57,7 @@ async def global_error_handler(event: ErrorEvent, bot: Bot):
                 show_alert=True
             )
         elif event.update.message:
-            await event.update.message.answer("❌ Произошла ошибка. Попробуй ещё раз.")
+            await event.update.message.answer("❌ Произошла ошибка. Попробуй еще раз.")
     except TelegramForbiddenError:
         pass
     except Exception:

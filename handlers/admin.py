@@ -15,9 +15,9 @@ from aiogram.filters import Filter
 from aiogram.methods import RefundStarPayment
 from aiogram.exceptions import TelegramBadRequest
 
-from config import ADMIN_IDS, LEDGER_PAGE_SIZE
+from config import LEDGER_PAGE_SIZE, ROLE_ADMIN, ROLE_OWNER
 
-from handlers.user import menu_text, is_admin, safe_edit_text
+from handlers.user import safe_edit_text
 
 from db import (
     tx, fmt_stars,
@@ -44,11 +44,14 @@ from db import (
 
     # channels
     list_task_channels, get_task_channel, create_task_channel, set_task_channel_active, task_channel_stats, update_task_channel_params,
-    get_task_channel_allocated_views, list_task_posts_by_channel
+    get_task_channel_allocated_views, list_task_posts_by_channel,
+
+    #roles
+    get_user_role_level, get_user_role_name, user_has_role, set_user_role_level, role_title_from_level
 )
 
 from keyboards import (
-    main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, admin_fee_refund_kb,
+    admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, admin_fee_refund_kb,
     campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb,
     admin_task_channels_kb, admin_task_channel_card_kb, admin_growth_photo_kb,
 )
@@ -62,9 +65,12 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 class AdminOnly(Filter):
-    async def __call__(self, event: TelegramObject) -> bool:
+    async def __call__(self, event: TelegramObject, db) -> bool:
         user = getattr(event, "from_user", None)
-        return bool(user and user.id in ADMIN_IDS)
+        if not user:
+            return False
+
+        return await user_has_role(db, user.id, ROLE_ADMIN)
 
 
 router.message.filter(AdminOnly())
@@ -141,7 +147,7 @@ async def _render_campaign_card(callback: CallbackQuery, key: str, db):
     elif status == "draft":
         status_text = "🟡 Черновик"
     elif status == "ended":
-        status_text = "🔴 Завершён"
+        status_text = "🔴 Завершен"
     else:
         status_text = f"⚪ {status}"
 
@@ -156,20 +162,6 @@ async def _render_campaign_card(callback: CallbackQuery, key: str, db):
 async def adm_back(callback: CallbackQuery):
     await callback.answer()
     await safe_edit_text(callback.message, "🛠 Админ-панель", reply_markup=admin_menu_kb())
-
-
-@router.callback_query(F.data == "adm:close")
-async def adm_close(callback: CallbackQuery, db):
-    await callback.answer()
-
-    user_id = callback.from_user.id
-    balance = await get_balance(db, user_id)
-
-    await safe_edit_text(
-        callback.message,
-        menu_text(balance),
-        reply_markup=main_menu(is_admin(user_id))
-    )
 
 
 @router.callback_query(F.data == "adm:list")
@@ -360,7 +352,7 @@ async def adm_stats_menu(callback: CallbackQuery, db):
         f"💰 Всего заклеймили: {total_claimed_all:.2f}⭐\n ({claims_count_all} клеймов)\n"
         f"🟡 Черновиков: {draft_cnt}\n"
         f"🟢 Активных конкурсов: {active_cnt}\n"
-        f"🔴 Завершённых: {ended_cnt}\n\n"
+        f"🔴 Завершенных: {ended_cnt}\n\n"
         "Последние 5 конкурсов:",
         reply_markup=stats_list_kb(rows)
     )
@@ -378,7 +370,7 @@ async def adm_stats(callback: CallbackQuery, db):
     if claimed:
         claimed_text = "\n".join([f"@{u}" for u in claimed[:50]])
         if len(claimed) > 50:
-            claimed_text += f"\n… и ещё {len(claimed) - 50}"
+            claimed_text += f"\n… и еще {len(claimed) - 50}"
     else:
         claimed_text = "—"
 
@@ -690,7 +682,7 @@ async def adm_user_adjust_finish(message: Message, state: FSMContext, db):
                 meta=f"mode={mode}",
             )
     except Exception:
-        await message.answer("❌ Ошибка операции, попробуй ещё раз")
+        await message.answer("❌ Ошибка операции, попробуй еще раз")
         logger.exception(Exception)
         return
 
@@ -1723,3 +1715,72 @@ async def adm_growth_back(callback: CallbackQuery):
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e):
             raise
+
+@router.message(F.text.startswith("/myrole"))
+async def adm_my_role(message: Message, db):
+    user_id = message.from_user.id
+    role_level = await get_user_role_level(db, user_id)
+    role_name = await get_user_role_name(db, user_id)
+
+    await message.answer(
+        f"Твоя роль: <b>{role_name}</b>\n"
+        f"Уровень: <b>{role_level}</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+@router.callback_query(F.data.startswith("adm:user:role:"))
+async def adm_choose_role(callback: CallbackQuery, db):
+    user_id = int(callback.data.split(":")[-1])
+
+    await callback.answer()
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Пользователь", callback_data=f"adm:setrole:{user_id}:0")],
+            [InlineKeyboardButton(text="💼 Клиент", callback_data=f"adm:setrole:{user_id}:3")],
+            [InlineKeyboardButton(text="🤝 Партнер", callback_data=f"adm:setrole:{user_id}:6")],
+            [InlineKeyboardButton(text="🛠 Админ", callback_data=f"adm:setrole:{user_id}:9")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data=f"adm:user:{user_id}")]
+        ]
+    )
+
+    await safe_edit_text(
+        callback.message,
+        f"Выбери новую роль для пользователя {user_id}",
+        reply_markup=kb
+    )
+
+@router.callback_query(F.data.startswith("adm:setrole:"))
+async def adm_set_role(callback: CallbackQuery, db):
+    _, _, user_id, level = callback.data.split(":")
+
+    user_id = int(user_id)
+    level = int(level)
+
+    if level >= ROLE_OWNER:
+        await callback.answer("❌ Роль владельца назначить нельзя.", show_alert=True)
+        return
+
+    await set_user_role_level(db, user_id, level)
+
+    final_level = await get_user_role_level(db, user_id)
+    final_role_name = role_title_from_level(final_level)
+
+    await callback.answer("✅ Роль изменена")
+
+    await callback.message.edit_text(
+        f"✅ Роль пользователя <code>{user_id}</code> изменена.\n\n"
+        f"Новая роль: <b>{final_role_name}</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅ Назад",
+                        callback_data=f"adm:user:details:{user_id}",
+                    )
+                ]
+            ]
+        ),
+    )
+

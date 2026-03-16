@@ -2,10 +2,103 @@ import aiosqlite, uuid, asyncio, logging
 
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
-from config import DB_PATH, REFERRAL_PERCENT
+from config import (
+    DB_PATH, REFERRAL_PERCENT, OWNER_ID, ADMIN_IDS, ROLE_USER, ROLE_CLIENT, ROLE_PARTNER, ROLE_ADMIN, ROLE_OWNER,
+)
 from decimal import Decimal, ROUND_DOWN
 
 logger = logging.getLogger(__name__)
+
+# ---------- Roles ----------
+
+def normalize_role_level(role_level: int) -> int:
+    value = int(role_level)
+    if value < ROLE_USER:
+        return ROLE_USER
+    if value > ROLE_OWNER:
+        return ROLE_OWNER
+    return value
+
+
+def role_title_from_level(role_level: int) -> str:
+    value = normalize_role_level(role_level)
+
+    if value >= ROLE_OWNER:
+        return "владелец"
+    if value >= ROLE_ADMIN:
+        return "админ"
+    if value >= ROLE_PARTNER:
+        return "партнер"
+    if value >= ROLE_CLIENT:
+        return "клиент"
+    return "пользователь"
+
+
+
+def bootstrap_role_level_for_user_id(user_id: int) -> int:
+    uid = int(user_id)
+
+    if uid in OWNER_ID:
+        return ROLE_OWNER
+    if uid in ADMIN_IDS:
+        return ROLE_ADMIN
+    return ROLE_USER
+
+
+def has_role_level(current_level: int, required_level: int) -> bool:
+    return int(current_level) >= int(required_level)
+
+
+async def _column_exists(db: aiosqlite.Connection, table_name: str, column_name: str) -> bool:
+    async with db.execute(f"PRAGMA table_info({table_name})") as cur:
+        rows = await cur.fetchall()
+
+    for row in rows:
+        name = row["name"] if isinstance(row, aiosqlite.Row) else row[1]
+        if name == column_name:
+            return True
+    return False
+
+
+async def _ensure_users_role_schema(db: aiosqlite.Connection) -> None:
+    if not await _column_exists(db, "users", "role_level"):
+        await db.execute(
+            f"ALTER TABLE users ADD COLUMN role_level INTEGER NOT NULL DEFAULT {ROLE_USER}"
+        )
+
+    await db.execute(
+        f"""
+        UPDATE users
+        SET role_level = COALESCE(role_level, {ROLE_USER})
+        """
+    )
+
+    for owner_id in OWNER_ID:
+        await db.execute(
+            """
+            UPDATE users
+            SET role_level = CASE
+                WHEN COALESCE(role_level, 0) < ? THEN ?
+                ELSE role_level
+            END
+            WHERE user_id = ?
+            """,
+            (ROLE_OWNER, ROLE_OWNER, int(owner_id)),
+        )
+
+    for admin_id in ADMIN_IDS:
+        await db.execute(
+            """
+            UPDATE users
+            SET role_level = CASE
+                WHEN COALESCE(role_level, 0) < ? THEN ?
+                ELSE role_level
+            END
+            WHERE user_id = ?
+            """,
+            (ROLE_ADMIN, ROLE_ADMIN, int(admin_id)),
+        )
+
 
 # ---------- Connection / TX ----------
 
@@ -64,6 +157,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
           suspicious_reason TEXT,
           referred_by INTEGER,
           is_banned INTEGER DEFAULT 0,
+          role_level INTEGER NOT NULL DEFAULT 0,
           created_at TEXT DEFAULT (datetime('now')),
           last_seen_at TEXT DEFAULT (datetime('now'))
         );
@@ -208,6 +302,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by);
     """)
 
+    await _ensure_users_role_schema(db)
     await db.commit()
 
 
@@ -224,16 +319,21 @@ async def register_user(
     fn = (first_name or "").strip() or None
     ln = (last_name or "").strip() or None
 
+    bootstrap_level = bootstrap_role_level_for_user_id(user_id)
+
     async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as cur:
         exists = await cur.fetchone() is not None
 
     if not exists:
         await db.execute(
             """
-            INSERT INTO users (user_id, username, tg_first_name, tg_last_name, balance, created_at, last_seen_at)
-            VALUES (?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+            INSERT INTO users (
+                user_id, username, tg_first_name, tg_last_name,
+                balance, role_level, created_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?, 0, ?, datetime('now'), datetime('now'))
             """,
-            (user_id, u, fn, ln),
+            (user_id, u, fn, ln, bootstrap_level),
         )
         return
 
@@ -243,11 +343,68 @@ async def register_user(
         SET username = COALESCE(?, username),
             tg_first_name = COALESCE(?, tg_first_name),
             tg_last_name = COALESCE(?, tg_last_name),
+            role_level = CASE
+                WHEN COALESCE(role_level, 0) < ? THEN ?
+                ELSE role_level
+            END,
             last_seen_at = datetime('now')
         WHERE user_id = ?
         """,
-        (u, fn, ln, user_id),
+        (u, fn, ln, bootstrap_level, bootstrap_level, user_id),
     )
+
+async def get_user_role_level(db: aiosqlite.Connection, user_id: int) -> int:
+    async with db.execute(
+            """
+        SELECT COALESCE(role_level, ?) AS role_level
+        FROM users
+        WHERE user_id = ?
+        """,
+            (ROLE_USER, int(user_id)),
+    ) as cur:
+        row = await cur.fetchone()
+
+    db_level = int(row["role_level"]) if row else ROLE_USER
+    bootstrap_level = bootstrap_role_level_for_user_id(user_id)
+    return max(db_level, bootstrap_level)
+
+
+async def get_user_role_name(db: aiosqlite.Connection, user_id: int) -> str:
+    return role_title_from_level(await get_user_role_level(db, user_id))
+
+
+async def user_has_role(db: aiosqlite.Connection, user_id: int, required_level: int) -> bool:
+    current_level = await get_user_role_level(db, user_id)
+    return has_role_level(current_level, required_level)
+
+
+async def set_user_role_level(db: aiosqlite.Connection, user_id: int, role_level: int) -> bool:
+    target_level = normalize_role_level(role_level)
+
+    async with db.execute(
+            "SELECT 1 FROM users WHERE user_id = ?",
+            (int(user_id),),
+    ) as cur:
+        exists = await cur.fetchone()
+
+    if not exists:
+        return False
+
+    if target_level >= ROLE_OWNER:
+        target_level = ROLE_ADMIN
+
+    target_level = max(target_level, bootstrap_role_level_for_user_id(user_id))
+
+    await db.execute(
+        """
+        UPDATE users
+        SET role_level = ?
+        WHERE user_id = ?
+        """,
+        (target_level, int(user_id)),
+    )
+    return True
+
 
 async def ensure_user_registered(message_or_callback, db):
     user = message_or_callback.from_user
@@ -1234,10 +1391,14 @@ async def build_user_details_text(db, user_id: int) -> str:
     else:
         suspicious_block = "✅ Не подозрительный"
 
+    role_level = await get_user_role_level(db, user_id)
+    role_name = role_title_from_level(role_level)
+
     return (
         f"👤 Пользователь: {user['user_id']}\n"
         f"Username: @{user['username'] or '-'}\n"
-        f"Баланс: {fmt_stars(user['balance'])}⭐\n\n"
+        f"Баланс: {fmt_stars(user['balance'])}⭐\n"
+        f"Роль: {role_name}\n"
         f"{suspicious_block}"
     )
 
