@@ -127,6 +127,7 @@ def admin_user_kb(user_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📊 Статистика ⭐", callback_data=f"adm:user:stats:{user_id}",)],
             [InlineKeyboardButton(text="📜 Последние операции", callback_data=f"adm:user:ledger:{user_id}",)],
+            [InlineKeyboardButton(text="🔧 Изменить роль", callback_data=f"adm:user:role:{user_id}")],
             [InlineKeyboardButton(text="➕ Начислить ⭐", callback_data=f"adm:ub:add:{user_id}",)],
             [InlineKeyboardButton(text="➖ Списать ⭐", callback_data=f"adm:ub:sub:{user_id}",)],
             [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:back",)],

@@ -390,6 +390,9 @@ async def set_user_role_level(db: aiosqlite.Connection, user_id: int, role_level
     if not exists:
         return False
 
+    if target_level >= ROLE_OWNER:
+        target_level = ROLE_ADMIN
+
     target_level = max(target_level, bootstrap_role_level_for_user_id(user_id))
 
     await db.execute(
@@ -1388,10 +1391,14 @@ async def build_user_details_text(db, user_id: int) -> str:
     else:
         suspicious_block = "✅ Не подозрительный"
 
+    role_level = await get_user_role_level(db, user_id)
+    role_name = role_title_from_level(role_level)
+
     return (
         f"👤 Пользователь: {user['user_id']}\n"
         f"Username: @{user['username'] or '-'}\n"
-        f"Баланс: {fmt_stars(user['balance'])}⭐\n\n"
+        f"Баланс: {fmt_stars(user['balance'])}⭐\n"
+        f"Роль: {role_name}\n"
         f"{suspicious_block}"
     )
 

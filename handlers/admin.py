@@ -15,7 +15,7 @@ from aiogram.filters import Filter
 from aiogram.methods import RefundStarPayment
 from aiogram.exceptions import TelegramBadRequest
 
-from config import LEDGER_PAGE_SIZE, ROLE_ADMIN
+from config import LEDGER_PAGE_SIZE, ROLE_ADMIN, ROLE_OWNER
 
 from handlers.user import safe_edit_text
 
@@ -47,7 +47,7 @@ from db import (
     get_task_channel_allocated_views, list_task_posts_by_channel,
 
     #roles
-    get_user_role_level, get_user_role_name, user_has_role, set_user_role_level,
+    get_user_role_level, get_user_role_name, user_has_role, set_user_role_level, role_title_from_level
 )
 
 from keyboards import (
@@ -1716,46 +1716,6 @@ async def adm_growth_back(callback: CallbackQuery):
         if "message is not modified" not in str(e):
             raise
 
-@router.message(F.text.startswith("/setrole "))
-async def adm_set_role(message: Message, db):
-    parts = (message.text or "").strip().split()
-
-    if len(parts) != 3:
-        await message.answer(
-            "Формат:\n"
-            "/setrole <user_id> <level>\n\n"
-            "Уровни:\n"
-            "0 = user\n"
-            "3 = client\n"
-            "6 = partner\n"
-            "9 = admin\n"
-            "10 = owner"
-        )
-        return
-
-    try:
-        target_user_id = int(parts[1])
-        new_level = int(parts[2])
-    except ValueError:
-        await message.answer("❌ user_id и level должны быть числами.")
-        return
-
-    ok = await set_user_role_level(db, target_user_id, new_level)
-    if not ok:
-        await message.answer("❌ Пользователь не найден в БД. Пусть сначала зайдет в бота.")
-        return
-
-    final_level = await get_user_role_level(db, target_user_id)
-    final_role_name = await get_user_role_name(db, target_user_id)
-
-    await message.answer(
-        "✅ Роль обновлена\n\n"
-        f"user_id: <code>{target_user_id}</code>\n"
-        f"level: <b>{final_level}</b>\n"
-        f"role: <b>{final_role_name}</b>",
-        parse_mode=ParseMode.HTML,
-    )
-
 @router.message(F.text.startswith("/myrole"))
 async def adm_my_role(message: Message, db):
     user_id = message.from_user.id
@@ -1767,3 +1727,60 @@ async def adm_my_role(message: Message, db):
         f"Уровень: <b>{role_level}</b>",
         parse_mode=ParseMode.HTML,
     )
+
+@router.callback_query(F.data.startswith("adm:user:role:"))
+async def adm_choose_role(callback: CallbackQuery, db):
+    user_id = int(callback.data.split(":")[-1])
+
+    await callback.answer()
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Пользователь", callback_data=f"adm:setrole:{user_id}:0")],
+            [InlineKeyboardButton(text="💼 Клиент", callback_data=f"adm:setrole:{user_id}:3")],
+            [InlineKeyboardButton(text="🤝 Партнер", callback_data=f"adm:setrole:{user_id}:6")],
+            [InlineKeyboardButton(text="🛠 Админ", callback_data=f"adm:setrole:{user_id}:9")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data=f"adm:user:{user_id}")]
+        ]
+    )
+
+    await safe_edit_text(
+        callback.message,
+        f"Выбери новую роль для пользователя {user_id}",
+        reply_markup=kb
+    )
+
+@router.callback_query(F.data.startswith("adm:setrole:"))
+async def adm_set_role(callback: CallbackQuery, db):
+    _, _, user_id, level = callback.data.split(":")
+
+    user_id = int(user_id)
+    level = int(level)
+
+    if level >= ROLE_OWNER:
+        await callback.answer("❌ Роль владельца назначить нельзя.", show_alert=True)
+        return
+
+    await set_user_role_level(db, user_id, level)
+
+    final_level = await get_user_role_level(db, user_id)
+    final_role_name = role_title_from_level(final_level)
+
+    await callback.answer("✅ Роль изменена")
+
+    await callback.message.edit_text(
+        f"✅ Роль пользователя <code>{user_id}</code> изменена.\n\n"
+        f"Новая роль: <b>{final_role_name}</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅ Назад",
+                        callback_data=f"adm:user:details:{user_id}",
+                    )
+                ]
+            ]
+        ),
+    )
+
