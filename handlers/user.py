@@ -1086,15 +1086,14 @@ def daily_checkin_text(current_day: int, already_claimed_today: bool) -> str:
     current_reward = round(current_day * 0.05, 2)
     next_reward = round(next_day * 0.05, 2)
 
-    status = "✅ Сегодня бонус уже получен" if already_claimed_today else "🎁 Сегодня бонус доступен"
+    status = "✅ Ежедневный бонус уже получен" if already_claimed_today else "🎁 Ежедневный бонус доступен"
 
     return (
-        "🎁 Ежедневный бонус\n\n"
         f"{status}\n"
         f"🔥 День цикла: {current_day}/30\n"
         f"💰 Сегодня: {fmt_stars(current_reward)}⭐\n"
         f"⏭ Завтра: {fmt_stars(next_reward)}⭐\n\n"
-        "Заходите каждый день, чтобы не сбросить цикл."
+        "Заходите каждый день, чтобы не сбросился прогресс"
     )
 
 @router.callback_query(F.data == "daily_checkin")
