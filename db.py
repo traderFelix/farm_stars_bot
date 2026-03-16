@@ -1,6 +1,6 @@
 import aiosqlite, uuid, asyncio, logging, json
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
 from config import (
@@ -159,7 +159,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
           referred_by INTEGER,
           is_banned INTEGER DEFAULT 0,
           role_level INTEGER NOT NULL DEFAULT 0,
-          daily_checkin_streak INTEGER NOT NULL DEFAULT 0,
+          daily_checkin_cycle_day INTEGER NOT NULL DEFAULT 0,
           last_daily_checkin_at TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           last_seen_at TEXT DEFAULT (datetime('now'))
@@ -1910,15 +1910,15 @@ async def auto_disable_task_channel_if_exhausted(
     )
     return cur.rowcount == 1
 
-def normalize_daily_streak(streak: int) -> int:
-    if streak <= 0:
+def normalize_daily_cycle_day(cycle_day: int) -> int:
+    if cycle_day <= 0:
         return 1
-    return ((streak - 1) % 30) + 1
+    return ((cycle_day - 1) % 30) + 1
 
 
-def daily_checkin_reward(streak: int) -> float:
-    streak = normalize_daily_streak(streak)
-    return round(streak * 0.05, 2)
+def daily_checkin_reward(cycle_day: int) -> float:
+    cycle_day = normalize_daily_cycle_day(cycle_day)
+    return round(cycle_day * 0.05, 2)
 
 
 async def claim_daily_checkin(
@@ -1930,7 +1930,7 @@ async def claim_daily_checkin(
 ):
     uid = int(user_id)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     today = now.date()
     yesterday = today - timedelta(days=1)
 
@@ -1939,7 +1939,7 @@ async def claim_daily_checkin(
 
         async with db.execute(
                 """
-            SELECT daily_checkin_streak, last_daily_checkin_at
+            SELECT daily_checkin_cycle_day, last_daily_checkin_at
             FROM users
             WHERE user_id = ?
             """,
@@ -1947,7 +1947,7 @@ async def claim_daily_checkin(
         ) as cur:
             row = await cur.fetchone()
 
-        streak = int(row["daily_checkin_streak"] or 0)
+        cycle_day = int(row["daily_checkin_cycle_day"] or 0)
         last_checkin_raw = row["last_daily_checkin_at"]
 
         last_date = None
@@ -1955,37 +1955,25 @@ async def claim_daily_checkin(
             last_date = datetime.fromisoformat(last_checkin_raw).date()
 
         if last_date == today:
-            current_streak = normalize_daily_streak(streak)
-            next_streak = normalize_daily_streak(current_streak + 1)
-
-            current_reward = daily_checkin_reward(current_streak)
-            next_reward = daily_checkin_reward(next_streak)
             balance = await get_balance(db, uid)
-
-            text = (
-                f"🎁 Ежедневный бонус уже получен!\n\n"
-                f"💰 Сегодняшний бонус: {fmt_stars(current_reward)}⭐\n"
-                f"⏭ Завтра будет: {fmt_stars(next_reward)}⭐\n"
-            )
-
-            return False, text, balance
+            return False, "", balance
 
         if last_date == yesterday:
-            new_streak = normalize_daily_streak(streak + 1)
+            new_cycle_day = normalize_daily_cycle_day(cycle_day + 1)
         else:
-            new_streak = 1
+            new_cycle_day = 1
 
-        reward = daily_checkin_reward(new_streak)
-        next_streak = normalize_daily_streak(new_streak + 1)
-        next_reward = daily_checkin_reward(next_streak)
+        reward = daily_checkin_reward(new_cycle_day)
+        next_cycle_day = normalize_daily_cycle_day(new_cycle_day + 1)
+        next_reward = daily_checkin_reward(next_cycle_day)
 
         await db.execute(
             """
             UPDATE users
-            SET daily_checkin_streak = ?, last_daily_checkin_at = ?
+            SET daily_checkin_cycle_day = ?, last_daily_checkin_at = ?
             WHERE user_id = ?
             """,
-            (new_streak, now.isoformat(), uid),
+            (new_cycle_day, now.isoformat(), uid),
         )
 
         await apply_balance_delta(
@@ -1996,7 +1984,7 @@ async def claim_daily_checkin(
             meta=json.dumps(
                 {
                     "type": "daily_checkin",
-                    "streak": new_streak,
+                    "cycle_day": new_cycle_day,
                     "reward": reward,
                 },
                 ensure_ascii=False,

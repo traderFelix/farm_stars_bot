@@ -2,7 +2,7 @@ import asyncio, logging
 
 from typing import Optional
 
-from datetime import datetime
+from datetime import datetime, timezone
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.enums import ParseMode
@@ -1109,7 +1109,7 @@ async def daily_checkin_open(callback: CallbackQuery, db):
 
     async with db.execute(
             """
-        SELECT daily_checkin_streak, last_daily_checkin_at
+        SELECT daily_checkin_cycle_day, last_daily_checkin_at
         FROM users
         WHERE user_id = ?
         """,
@@ -1117,10 +1117,10 @@ async def daily_checkin_open(callback: CallbackQuery, db):
     ) as cur:
         row = await cur.fetchone()
 
-    stored_day = int(row["daily_checkin_streak"] or 0)
+    stored_day = int(row["daily_checkin_cycle_day"] or 0)
     last_checkin_raw = row["last_daily_checkin_at"]
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     last_date = None
 
     if last_checkin_raw:
@@ -1156,7 +1156,7 @@ async def daily_checkin_noop(callback: CallbackQuery):
 
 @router.callback_query(F.data == "daily_checkin:claim")
 async def daily_checkin_claim(callback: CallbackQuery, db):
-    ok, alert_text, _balance = await claim_daily_checkin(
+    _, alert_text, _ = await claim_daily_checkin(
         db=db,
         user_id=callback.from_user.id,
         username=callback.from_user.username,
@@ -1168,7 +1168,7 @@ async def daily_checkin_claim(callback: CallbackQuery, db):
 
     async with db.execute(
             """
-        SELECT daily_checkin_streak, last_daily_checkin_at
+        SELECT daily_checkin_cycle_day, last_daily_checkin_at
         FROM users
         WHERE user_id = ?
         """,
@@ -1176,7 +1176,7 @@ async def daily_checkin_claim(callback: CallbackQuery, db):
     ) as cur:
         row = await cur.fetchone()
 
-    current_day = int(row["daily_checkin_streak"] or 1)
+    current_day = int(row["daily_checkin_cycle_day"] or 1)
 
     await safe_edit_text(
         callback.message,
