@@ -50,7 +50,7 @@ from db import (
 from keyboards import (
     main_menu, admin_menu_kb, admin_back_kb, campaigns_list_kb, campaign_manage_kb, stats_list_kb, admin_fee_refund_kb,
     campaign_created_kb, admin_user_kb, admin_withdraw_list_kb, admin_withdraw_actions_kb, campaign_delete_confirm_kb,
-    admin_task_channels_kb, admin_task_channel_card_kb,
+    admin_task_channels_kb, admin_task_channel_card_kb, admin_growth_photo_kb,
 )
 
 from states import (
@@ -539,12 +539,12 @@ async def adm_growth_png(callback: CallbackQuery, db):
         f"30д - {active_30d}"
     )
 
-    await callback.message.answer_photo(photo=photo, caption=caption)
+    origin_message_id = callback.message.message_id
 
-    await safe_edit_text(
-        callback.message,
-        "📈 График и цифры отправил сообщением выше.",
-        reply_markup=admin_back_kb()
+    await callback.message.answer_photo(
+        photo=photo,
+        caption=caption,
+        reply_markup=admin_growth_photo_kb(origin_message_id),
     )
 
 
@@ -1701,3 +1701,25 @@ async def adm_task_channel_new_view_seconds(message: Message, state: FSMContext,
             ]
         )
     )
+
+@router.callback_query(F.data.startswith("adm:growth_back:"))
+async def adm_growth_back(callback: CallbackQuery):
+    await callback.answer()
+
+    origin_message_id = int(callback.data.rsplit(":", 1)[1])
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    try:
+        await callback.bot.edit_message_text(
+            chat_id=callback.from_user.id,
+            message_id=origin_message_id,
+            text="🔐 Админ-панель",
+            reply_markup=admin_menu_kb(),
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise

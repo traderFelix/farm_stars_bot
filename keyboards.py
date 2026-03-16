@@ -275,3 +275,14 @@ def admin_task_channel_card_kb(channel_id: int, is_active: bool) -> InlineKeyboa
             [InlineKeyboardButton(text="⬅ Назад", callback_data="adm:tch:list")],
         ]
     )
+
+def admin_growth_photo_kb(origin_message_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="⬅ Назад",
+                callback_data=f"adm:growth_back:{origin_message_id}"
+            )]
+        ]
+    )
+
