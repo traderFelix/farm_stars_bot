@@ -1995,7 +1995,7 @@ async def claim_daily_checkin(
 
         text = (
             f"🎁 Вы получили {fmt_stars(reward)}⭐\n\n"
-            f"⏭ Приходите завтра и забирайте {fmt_stars(next_reward)}⭐"
+            f"📅 Приходите завтра и забирайте {fmt_stars(next_reward)}⭐"
         )
 
         return True, text, balance

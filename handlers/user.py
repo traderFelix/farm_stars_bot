@@ -1092,7 +1092,7 @@ def daily_checkin_text(current_day: int, already_claimed_today: bool) -> str:
         f"{status}\n\n"
         f"🔥 День цикла: {current_day}/30\n"
         f"💰 Сегодня: {fmt_stars(current_reward)}⭐\n"
-        f"⏭ Завтра: {fmt_stars(next_reward)}⭐\n\n"
+        f"📅 Завтра: {fmt_stars(next_reward)}⭐\n\n"
         "Заходите каждый день, чтобы не сбросился прогресс"
     )
 
