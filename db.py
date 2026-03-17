@@ -1347,7 +1347,7 @@ async def get_user_earnings_breakdown(db, user_id: int):
     row = await cursor.fetchone()
 
     tasks = row["view_post_bonus"] or 0
-    daily_checkin = row["daily_bonus"] or 0
+    daily_bonus = row["daily_bonus"] or 0
     contests = row["contest_bonus"] or 0
     referrals = row["referral_bonus"] or 0
     admin_adjust = row["admin_adjust"] or 0
@@ -1362,8 +1362,8 @@ async def get_user_earnings_breakdown(db, user_id: int):
         "total": total,
         "tasks": tasks,
         "tasks_pct": pct(tasks, total),
-        "daily_checkin": daily_checkin,
-        "daily_checkin_pct": pct(daily_checkin, total),
+        "daily_bonus": daily_bonus,
+        "daily_bonus_pct": pct(daily_bonus, total),
         "contests": contests,
         "contests_pct": pct(contests, total),
         "referrals": referrals,
@@ -1958,10 +1958,10 @@ async def claim_daily_checkin(
             db=db,
             user_id=uid,
             delta=reward,
-            reason="daily_checkin",
+            reason="daily_bonus",
             meta=json.dumps(
                 {
-                    "type": "daily_checkin",
+                    "type": "daily_bonus",
                     "cycle_day": new_cycle_day,
                     "reward": reward,
                 },
