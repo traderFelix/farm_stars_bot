@@ -14,6 +14,7 @@ from aiogram.types import (
 
 from config import (
     CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENT, ROLE_USER, ROLE_CLIENT, ROLE_PARTNER, GOOD_ACTIVITY_REASONS,
+    SYSTEM_REASONS,
 )
 
 from db import (
@@ -71,6 +72,7 @@ def menu_text(balance: float, role_level: int = ROLE_USER, activity_index: float
     )
 
 async def get_activity_index(db, user_id: int) -> float:
+    system_placeholders = ",".join("?" for _ in SYSTEM_REASONS)
     good_placeholders = ",".join("?" for _ in GOOD_ACTIVITY_REASONS)
 
     sql = f"""
@@ -85,10 +87,10 @@ async def get_activity_index(db, user_id: int) -> float:
         END), 0) AS total_earned
     FROM ledger
     WHERE user_id = ?
-      AND reason NOT IN ('withdraw_hold', 'withdraw_paid', 'withdraw_release')
+      AND reason NOT IN ({system_placeholders})
     """
 
-    params = [*GOOD_ACTIVITY_REASONS, int(user_id)]
+    params = [*GOOD_ACTIVITY_REASONS, int(user_id), *SYSTEM_REASONS]
 
     async with db.execute(sql, params) as cur:
         row = await cur.fetchone()

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
 from config import (
-    DB_PATH, REFERRAL_PERCENT, OWNER_ID, ADMIN_IDS, ROLE_USER, ROLE_CLIENT, ROLE_PARTNER, ROLE_ADMIN, ROLE_OWNER,
+    DB_PATH, REFERRAL_PERCENT, OWNER_ID, ADMIN_IDS, ROLE_USER, ROLE_CLIENT, ROLE_PARTNER, ROLE_ADMIN, ROLE_OWNER, SYSTEM_REASONS,
 )
 from decimal import Decimal, ROUND_DOWN
 
@@ -1328,8 +1328,9 @@ async def clear_user_suspicious(db, user_id: int):
     await db.commit()
 
 async def get_user_earnings_breakdown(db, user_id: int):
-    cursor = await db.execute(
-        """
+    system_placeholders = ",".join("?" for _ in SYSTEM_REASONS)
+
+    query = f"""
         SELECT
             COALESCE(SUM(CASE WHEN reason = 'view_post_bonus' THEN delta ELSE 0 END), 0) AS view_post_bonus,
             COALESCE(SUM(CASE WHEN reason = 'daily_bonus' THEN delta ELSE 0 END), 0) AS daily_bonus,
@@ -1337,26 +1338,27 @@ async def get_user_earnings_breakdown(db, user_id: int):
             COALESCE(SUM(CASE WHEN reason = 'referral_bonus' THEN delta ELSE 0 END), 0) AS referral_bonus,
             COALESCE(SUM(CASE WHEN reason = 'admin_adjust' THEN delta ELSE 0 END), 0) AS admin_adjust,
             COALESCE(SUM(CASE
-                WHEN reason NOT IN ('withdraw_hold', 'withdraw_paid', 'withdraw_release')
+                WHEN reason NOT IN ({system_placeholders})
                 THEN delta ELSE 0 END), 0) AS total_earned
         FROM ledger
         WHERE user_id = ?
-        """,
-        (user_id,),
-    )
+    """
+
+    params = (*SYSTEM_REASONS, user_id)
+    cursor = await db.execute(query, params)
     row = await cursor.fetchone()
 
-    view_post_bonus = row["view_post_bonus"] or 0
-    daily_bonus = row["daily_bonus"] or 0
-    contest_bonus = row["contest_bonus"] or 0
-    referral_bonus = row["referral_bonus"] or 0
-    admin_adjust = row["admin_adjust"] or 0
-    total = row["total_earned"] or 0
+    view_post_bonus = float(row["view_post_bonus"] or 0)
+    daily_bonus = float(row["daily_bonus"] or 0)
+    contest_bonus = float(row["contest_bonus"] or 0)
+    referral_bonus = float(row["referral_bonus"] or 0)
+    admin_adjust = float(row["admin_adjust"] or 0)
+    total = float(row["total_earned"] or 0)
 
-    def pct(value: float, total_value: float) -> int:
+    def pct(value: float, total_value: float) -> float:
         if total_value == 0:
-            return 0
-        return round(value * 100 / total_value)
+            return 0.0
+        return value * 100 / total_value
 
     return {
         "total": total,
@@ -1388,11 +1390,11 @@ async def build_user_stats_text(db, user_id: int) -> str:
 
     return (
         f"⭐ Всего заработано: {fmt_stars(stats['total'])}⭐\n"
-        f"{fmt_stars(stats['view_post_bonus'])} ({stats['view_post_bonus_pct']}%) — просмотр постов\n"
-        f"{fmt_stars(stats['daily_bonus'])} ({stats['daily_bonus_pct']}%) — ежедневный бонус\n"
-        f"{fmt_stars(stats['contest_bonus'])} ({stats['contest_bonus_pct']}%) — конкурсы\n"
-        f"{fmt_stars(stats['referral_bonus'])} ({stats['referral_bonus_pct']}%) — рефералы\n"
-        f"{fmt_stars(stats['admin_adjust'])} ({stats['admin_adjust_pct']}%) — начисления от админа"
+        f"{fmt_stars(stats['view_post_bonus'])} ({stats['view_post_bonus_pct']:.1f}%) — просмотр постов\n"
+        f"{fmt_stars(stats['daily_bonus'])} ({stats['daily_bonus_pct']:.1f}%) — ежедневный бонус\n"
+        f"{fmt_stars(stats['contest_bonus'])} ({stats['contest_bonus_pct']:.1f}%) — конкурсы\n"
+        f"{fmt_stars(stats['referral_bonus'])} ({stats['referral_bonus_pct']:.1f}%) — рефералы\n"
+        f"{fmt_stars(stats['admin_adjust'])} ({stats['admin_adjust_pct']:.1f}%) — начисления от админа"
     )
 
 async def mark_withdraw_fee_refunded(db, withdrawal_id: int):
