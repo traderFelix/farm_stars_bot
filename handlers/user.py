@@ -13,7 +13,7 @@ from aiogram.types import (
 )
 
 from config import (
-    CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENT, ROLE_USER, ROLE_CLIENT, ROLE_PARTNER,
+    CHANNEL_ID, ADMIN_IDS, MIN_WITHDRAW, MIN_WITHDRAW_PERCENT, ROLE_USER, ROLE_CLIENT, ROLE_PARTNER, GOOD_ACTIVITY_REASONS,
 )
 
 from db import (
@@ -60,14 +60,51 @@ WITHDRAW_TEXT = f"""
 Выберите нужный вариант ниже! 👇
 """
 
-def menu_text(balance: float, role_level: int = ROLE_USER) -> str:
+def menu_text(balance: float, role_level: int = ROLE_USER, activity_index: float = 0.0) -> str:
     role_name = role_title_from_level(role_level)
 
     return (
-        "Чтобы получить больше ⭐️, выполняйте задания\n\n"
+        "🏠 Главное меню\n\n"
+        f"Баланс: {fmt_stars(balance)}⭐️\n\n"
         f"Роль: {role_name}\n"
-        f"Баланс: {fmt_stars(balance)}⭐️"
+        f"Индекс активности: {activity_index:.1f}%"
     )
+
+async def get_activity_index(db, user_id: int) -> float:
+    good_placeholders = ",".join("?" for _ in GOOD_ACTIVITY_REASONS)
+
+    sql = f"""
+    SELECT
+        COALESCE(SUM(CASE
+            WHEN delta > 0 AND reason IN ({good_placeholders}) THEN delta
+            ELSE 0
+        END), 0) AS good_total,
+        COALESCE(SUM(CASE
+            WHEN delta > 0 THEN delta
+            ELSE 0
+        END), 0) AS total_earned
+    FROM ledger
+    WHERE user_id = ?
+      AND reason NOT IN ('withdraw_hold', 'withdraw_paid', 'withdraw_release')
+    """
+
+    params = [*GOOD_ACTIVITY_REASONS, int(user_id)]
+
+    async with db.execute(sql, params) as cur:
+        row = await cur.fetchone()
+
+    good_total = float(row["good_total"] or 0)
+    total_earned = float(row["total_earned"] or 0)
+
+    if total_earned <= 0:
+        return 0.0
+
+    return (good_total / total_earned) * 100.0
+
+
+async def build_main_menu_text(db, user_id: int, balance: float, role_level: int) -> str:
+    activity_index = await get_activity_index(db, user_id)
+    return menu_text(balance, role_level, activity_index)
 
 @router.channel_post()
 async def ingest_task_channel_post(message: Message, db):
@@ -103,7 +140,7 @@ async def open_main_menu_from_bottom_button(message: Message, state: FSMContext,
     role_level = await get_user_role_level(db, user_id)
 
     await message.answer(
-        menu_text(balance, role_level),
+        await build_main_menu_text(db, user_id, balance, role_level),
         reply_markup=main_menu(role_level)
     )
 
@@ -158,7 +195,7 @@ async def start(message: Message, bot: Bot, db):
             )
 
             await message.answer(
-                menu_text(balance, role_level),
+                await build_main_menu_text(db, user_id, balance, role_level),
                 reply_markup=main_menu(role_level)
             )
         else:
@@ -194,7 +231,7 @@ async def check_subscription(callback: CallbackQuery, bot: Bot, db):
 
         await safe_edit_text(
             callback.message,
-            menu_text(balance, role_level),
+            await build_main_menu_text(db, user_id, balance, role_level),
             reply_markup=main_menu(role_level)
         )
     else:
@@ -345,7 +382,7 @@ async def back_to_main(callback: CallbackQuery, bot: Bot, state: FSMContext, db)
     await callback.answer()
     await safe_edit_text(
         callback.message,
-        menu_text(balance, role_level),
+        await build_main_menu_text(db, user_id, balance, role_level),
         reply_markup=main_menu(role_level)
     )
 
@@ -495,21 +532,19 @@ async def validate_withdraw_rules(db, user_id: int, amount: float) -> Optional[s
         return "🚫 Суточный лимит вывода превышен."
 
     earnings = await get_user_earnings_breakdown(db, user_id)
-    tasks = float(earnings.get("tasks", 0) or 0)
+    good = float(earnings.get("activity_good", 0) or 0)
     total = float(earnings.get("total", 0) or 0)
 
     if total <= 0:
-        return "🚫 Вывод пока недоступен."
+        return "❌ Вывод пока недоступен."
 
-    tasks_pct = tasks / total
-    if tasks_pct < MIN_WITHDRAW_PERCENT:
-        need_more = max(0.0, total * MIN_WITHDRAW_PERCENT - tasks)
+    activity_index = good / total
+
+    if activity_index < MIN_WITHDRAW_PERCENT:
         return (
-            "🚫 Вывод пока недоступен\n\n"
-            f"Для вывода минимум {MIN_WITHDRAW_PERCENT * 100:.0f}% всех полученных звезд должны быть добыты через задания.\n\n"
-            f"• Всего получено: {total:.2f}⭐\n"
-            f"• Через задания: {tasks:.2f}⭐ ({tasks_pct * 100:.1f}%)\n"
-            f"• Нужно добрать еще: {need_more:.2f}⭐"
+            "❌ Вывод пока недоступен\n\n"
+            f"Для вывода нужен Индекс активности не ниже {MIN_WITHDRAW_PERCENT * 100:.0f}%.\n\n"
+            f"• Индекс активности: {activity_index * 100:.1f}%"
         )
 
     return None
@@ -650,7 +685,8 @@ async def start_fee_payment_or_create(
 ):
     error_text = await validate_withdraw_rules(db, user_id, amount)
     if error_text:
-        await message.answer(error_text)
+        await safe_edit_text(
+            message, error_text, reply_markup=withdraw_back_kb())
         return
 
     first_withdraw = await is_first_withdraw(db, user_id)
@@ -744,7 +780,8 @@ async def withdraw_stars_fixed_amount(callback: CallbackQuery, state: FSMContext
 
     error_text = await validate_withdraw_rules(db, user_id, amount)
     if error_text:
-        await callback.message.answer(error_text)
+        await safe_edit_text(
+            callback.message, error_text, reply_markup=withdraw_back_kb())
         return
 
     first_withdraw = await is_first_withdraw(db, user_id)
@@ -909,10 +946,12 @@ async def on_successful_payment(message: Message, state: FSMContext, db):
 
     error_text = await validate_withdraw_rules(db, user_id, amount)
     if error_text:
-        await message.answer(
+        await safe_edit_text(
+            message,
             "⚠️ Комиссия оплачена, но заявка не может быть создана автоматически.\n\n"
             f"{error_text}\n\n"
-            "Напиши администратору."
+            "Напиши администратору.",
+            reply_markup=withdraw_back_kb()
         )
         return
 

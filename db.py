@@ -201,7 +201,7 @@ async def init_db(db: aiosqlite.Connection) -> None:
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           user_id INTEGER NOT NULL,
           delta NUMERIC NOT NULL,
-          reason TEXT NOT NULL,                    -- withdraw_hold | withdraw_paid | withdraw_release | admin_adjust | contest_bonus | referral_bonus | view_post_bonus | daily_bonus
+          reason TEXT NOT NULL,
           campaign_key TEXT,
           withdrawal_id INTEGER,
           meta TEXT,
@@ -1372,7 +1372,7 @@ async def get_user_earnings_breakdown(db, user_id: int):
         "admin_adjust_pct": pct(admin_adjust, total),
     }
 
-async def build_user_details_text(db, user_id: int) -> str:
+async def get_user_admin_details(db, user_id: int):
     cursor = await db.execute(
         """
         SELECT user_id, username, balance, is_suspicious, suspicious_reason
@@ -1381,29 +1381,7 @@ async def build_user_details_text(db, user_id: int) -> str:
         """,
         (user_id,),
     )
-    user = await cursor.fetchone()
-
-    if not user:
-        return "❌ Пользователь не найден."
-
-    if user["is_suspicious"]:
-        suspicious_block = (
-            f"⚠️ Подозрительный\n"
-            f"Причина: {user['suspicious_reason'] or '-'}"
-        )
-    else:
-        suspicious_block = "✅ Не подозрительный"
-
-    role_level = await get_user_role_level(db, user_id)
-    role_name = role_title_from_level(role_level)
-
-    return (
-        f"👤 Пользователь: {user['user_id']}\n"
-        f"Username: @{user['username'] or '-'}\n"
-        f"Баланс: {fmt_stars(user['balance'])}⭐\n"
-        f"Роль: {role_name}\n"
-        f"{suspicious_block}"
-    )
+    return await cursor.fetchone()
 
 async def build_user_stats_text(db, user_id: int) -> str:
     stats = await get_user_earnings_breakdown(db, user_id)
