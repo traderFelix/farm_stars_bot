@@ -303,10 +303,10 @@ def daily_checkin_kb(
     for _ in range(5):
         row = []
         for _ in range(6):
-            if day < current_day:
+            if day < current_day or (day == current_day and already_claimed_today):
                 text = f"✅ {day}"
             elif day == current_day:
-                text = f"🎁 {day}" if already_claimed_today else f"🔥 {day}"
+                text = f"🎁 {day}"
             else:
                 text = str(day)
 

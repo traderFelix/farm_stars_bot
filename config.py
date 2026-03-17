@@ -31,6 +31,23 @@ ROLE_OWNER = 10
 
 DB_PATH = "bot.db"
 MIN_WITHDRAW = 100.0
-MIN_WITHDRAW_PERCENT = 0.25
+MIN_WITHDRAW_PERCENT = 0.5
 LEDGER_PAGE_SIZE = 20
 REFERRAL_PERCENT = 0.10
+
+SYSTEM_REASONS = {
+    "withdraw_hold",
+    "withdraw_paid",
+    "withdraw_release",
+}
+GOOD_ACTIVITY_REASONS = {
+    "view_post_bonus",
+    "daily_bonus",
+    "referral_bonus",
+    "task_bonus",
+}
+BAD_ACTIVITY_REASONS = {
+    "admin_adjust",
+    "contest_bonus",
+    "promo_bonus",
+}

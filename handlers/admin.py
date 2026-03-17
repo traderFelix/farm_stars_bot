@@ -17,7 +17,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from config import LEDGER_PAGE_SIZE, ROLE_ADMIN, ROLE_OWNER
 
-from handlers.user import safe_edit_text
+from handlers.user import safe_edit_text, get_activity_index
 
 from db import (
     tx, fmt_stars,
@@ -33,7 +33,7 @@ from db import (
 
     # users/growth
     top_users_by_balance, users_total_count, users_new_since_hours, users_new_since_days, users_active_since_days,
-    users_growth_by_day, build_user_details_text, mark_user_suspicious, clear_user_suspicious,
+    users_growth_by_day, get_user_admin_details, mark_user_suspicious, clear_user_suspicious,
 
     # ledger
     ledger_add, apply_balance_delta, get_balance, balances_audit, xtr_ledger_add,
@@ -993,6 +993,8 @@ async def adm_audit_balances(callback: CallbackQuery, db):
     pending_withdrawn_sum = await pending_withdrawn_amount(db)
     claimed_from_ledger = await ledger_sum_by_reason(db, "contest_bonus")
     referral_bonus = await ledger_sum_by_reason(db, "referral_bonus")
+    view_post_bonus = await ledger_sum_by_reason(db, "view_post_bonus")
+    daily_bonus = await ledger_sum_by_reason(db, "daily_bonus")
 
     lines = [
         "🧮 Сверка балансов\n",
@@ -1000,7 +1002,9 @@ async def adm_audit_balances(callback: CallbackQuery, db):
         f"Получено в конкурсах (база): {fmt_stars(total_claimed_all)}⭐",
         f"Получено в конкурсах (леджер): {fmt_stars(claimed_from_ledger)}⭐",
         f"Получено за рефералов: {fmt_stars(referral_bonus)}⭐\n"
-        f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐",
+        f"Получено за просмотры постов: {fmt_stars(view_post_bonus)}⭐\n"
+        f"Получено за ежедневный бонус: {fmt_stars(daily_bonus)}⭐\n"
+        f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐\n",
         f"Выведено: {fmt_stars(total_withdrawn_sum)}⭐",
         f"В обработке: {fmt_stars(pending_withdrawn_sum)}⭐\n",
     ]
@@ -1784,3 +1788,29 @@ async def adm_set_role(callback: CallbackQuery, db):
         ),
     )
 
+async def build_user_details_text(db, user_id: int) -> str:
+    user = await get_user_admin_details(db, user_id)
+
+    if not user:
+        return "❌ Пользователь не найден."
+
+    if user["is_suspicious"]:
+        suspicious_block = (
+            f"⚠️ Подозрительный\n"
+            f"Причина: {user['suspicious_reason'] or '-'}"
+        )
+    else:
+        suspicious_block = "✅ Не подозрительный"
+
+    role_level = await get_user_role_level(db, user_id)
+    role_name = role_title_from_level(role_level)
+    activity_index = await get_activity_index(db, user_id)
+
+    return (
+        f"👤 Пользователь: {user['user_id']}\n\n"
+        f"Username: @{user['username'] or '-'}\n"
+        f"Баланс: {fmt_stars(user['balance'])}⭐\n"
+        f"Роль: {role_name}\n"
+        f"Индекс Активности: {activity_index:.1f}%\n\n"
+        f"{suspicious_block}"
+    )
