@@ -17,7 +17,7 @@ from config import (
 )
 
 from db import (
-    sum_recent_abuse_amount, has_pending_withdrawal, user_created_hours_ago, get_user_earnings_breakdown,
+    sum_recent_abuse_amount, has_pending_withdrawal, user_created_hours_ago,
     register_user, get_balance, create_withdrawal, user_withdrawals, apply_balance_debit_if_enough,
     claim_reward, list_active_campaigns, log_abuse_event, count_recent_abuse_events, tx, fmt_stars,
     wallet_used_by_another_user, wallet_users, ensure_user_registered, xtr_ledger_add, apply_balance_delta,
@@ -67,7 +67,7 @@ def menu_text(balance: float, role_level: int = ROLE_USER, activity_index: float
         "🏠 Главное меню\n\n"
         f"Баланс: {fmt_stars(balance)}⭐️\n\n"
         f"Роль: {role_name}\n"
-        f"Индекс активности: {activity_index:.1f}%"
+        f"Индекс Активности: {activity_index:.1f}%"
     )
 
 async def get_activity_index(db, user_id: int) -> float:
@@ -531,20 +531,15 @@ async def validate_withdraw_rules(db, user_id: int, amount: float) -> Optional[s
     if recent_withdraw_sum + amount > 1000:
         return "🚫 Суточный лимит вывода превышен."
 
-    earnings = await get_user_earnings_breakdown(db, user_id)
-    good = float(earnings.get("activity_good", 0) or 0)
-    total = float(earnings.get("total", 0) or 0)
-
-    if total <= 0:
+    activity_index = await get_activity_index(db, user_id)
+    if activity_index <= 0:
         return "❌ Вывод пока недоступен."
 
-    activity_index = good / total
-
-    if activity_index < MIN_WITHDRAW_PERCENT:
+    if activity_index < MIN_WITHDRAW_PERCENT * 100:
         return (
             "❌ Вывод пока недоступен\n\n"
-            f"Для вывода нужен Индекс активности не ниже {MIN_WITHDRAW_PERCENT * 100:.0f}%.\n\n"
-            f"• Индекс активности: {activity_index * 100:.1f}%"
+            f"Для вывода нужен Индекс Активности не ниже {MIN_WITHDRAW_PERCENT * 100:.0f}%.\n\n"
+            f"• Индекс Активности: {activity_index:.1f}%"
         )
 
     return None

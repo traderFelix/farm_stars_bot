@@ -1346,10 +1346,10 @@ async def get_user_earnings_breakdown(db, user_id: int):
     )
     row = await cursor.fetchone()
 
-    tasks = row["view_post_bonus"] or 0
+    view_post_bonus = row["view_post_bonus"] or 0
     daily_bonus = row["daily_bonus"] or 0
-    contests = row["contest_bonus"] or 0
-    referrals = row["referral_bonus"] or 0
+    contest_bonus = row["contest_bonus"] or 0
+    referral_bonus = row["referral_bonus"] or 0
     admin_adjust = row["admin_adjust"] or 0
     total = row["total_earned"] or 0
 
@@ -1360,14 +1360,14 @@ async def get_user_earnings_breakdown(db, user_id: int):
 
     return {
         "total": total,
-        "tasks": tasks,
-        "tasks_pct": pct(tasks, total),
+        "view_post_bonus": view_post_bonus,
+        "view_post_bonus_pct": pct(view_post_bonus, total),
         "daily_bonus": daily_bonus,
         "daily_bonus_pct": pct(daily_bonus, total),
-        "contests": contests,
-        "contests_pct": pct(contests, total),
-        "referrals": referrals,
-        "referrals_pct": pct(referrals, total),
+        "contest_bonus": contest_bonus,
+        "contest_bonus_pct": pct(contest_bonus, total),
+        "referral_bonus": referral_bonus,
+        "referral_bonus_pct": pct(referral_bonus, total),
         "admin_adjust": admin_adjust,
         "admin_adjust_pct": pct(admin_adjust, total),
     }
@@ -1388,10 +1388,10 @@ async def build_user_stats_text(db, user_id: int) -> str:
 
     return (
         f"⭐ Всего заработано: {fmt_stars(stats['total'])}⭐\n"
-        f"{fmt_stars(stats['tasks'])} ({stats['tasks_pct']}%) — задания\n"
-        f"{fmt_stars(stats['daily_checkin'])} ({stats['daily_checkin_pct']}%) — дейли чекин\n"
-        f"{fmt_stars(stats['contests'])} ({stats['contests_pct']}%) — конкурсы\n"
-        f"{fmt_stars(stats['referrals'])} ({stats['referrals_pct']}%) — рефералы\n"
+        f"{fmt_stars(stats['view_post_bonus'])} ({stats['view_post_bonus_pct']}%) — просмотр постов\n"
+        f"{fmt_stars(stats['daily_bonus'])} ({stats['daily_bonus_pct']}%) — ежедневный бонус\n"
+        f"{fmt_stars(stats['contest_bonus'])} ({stats['contest_bonus_pct']}%) — конкурсы\n"
+        f"{fmt_stars(stats['referral_bonus'])} ({stats['referral_bonus_pct']}%) — рефералы\n"
         f"{fmt_stars(stats['admin_adjust'])} ({stats['admin_adjust_pct']}%) — начисления от админа"
     )
 

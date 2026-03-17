@@ -993,6 +993,8 @@ async def adm_audit_balances(callback: CallbackQuery, db):
     pending_withdrawn_sum = await pending_withdrawn_amount(db)
     claimed_from_ledger = await ledger_sum_by_reason(db, "contest_bonus")
     referral_bonus = await ledger_sum_by_reason(db, "referral_bonus")
+    view_post_bonus = await ledger_sum_by_reason(db, "view_post_bonus")
+    daily_bonus = await ledger_sum_by_reason(db, "daily_bonus")
 
     lines = [
         "🧮 Сверка балансов\n",
@@ -1000,7 +1002,9 @@ async def adm_audit_balances(callback: CallbackQuery, db):
         f"Получено в конкурсах (база): {fmt_stars(total_claimed_all)}⭐",
         f"Получено в конкурсах (леджер): {fmt_stars(claimed_from_ledger)}⭐",
         f"Получено за рефералов: {fmt_stars(referral_bonus)}⭐\n"
-        f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐",
+        f"Получено за просмотры постов: {fmt_stars(view_post_bonus)}⭐\n"
+        f"Получено за ежедневный бонус: {fmt_stars(daily_bonus)}⭐\n"
+        f"Получено от админа: {fmt_stars(admin_added - admin_removed)}⭐\n",
         f"Выведено: {fmt_stars(total_withdrawn_sum)}⭐",
         f"В обработке: {fmt_stars(pending_withdrawn_sum)}⭐\n",
     ]
@@ -1807,6 +1811,6 @@ async def build_user_details_text(db, user_id: int) -> str:
         f"Username: @{user['username'] or '-'}\n"
         f"Баланс: {fmt_stars(user['balance'])}⭐\n"
         f"Роль: {role_name}\n"
-        f"Индекс активности: {activity_index:.1f}%\n\n"
+        f"Индекс Активности: {activity_index:.1f}%\n\n"
         f"{suspicious_block}"
     )
